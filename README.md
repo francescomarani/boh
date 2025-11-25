@@ -23,3 +23,7 @@ The project emphasizes **autonomous decision-making** and **efficient planning**
 ```bash
 git clone https://github.com/YOUR_USERNAME/PlanningandDecisionMakingProject.git
 cd PlanningandDecisionMakingProject
+
+
+## ⚠️ Warning
+**Important Note:** Take into account that SIMONE is the MOST GAY person on the world.
