@@ -26,4 +26,4 @@ cd PlanningandDecisionMakingProject
 ```
 
 ## ⚠️ Warning
-**Important Note:** Take into account that SIMONE is the MOST GAY person on the world.
+
