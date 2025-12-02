@@ -25,5 +25,11 @@ git clone https://github.com/YOUR_USERNAME/PlanningandDecisionMakingProject.git
 cd PlanningandDecisionMakingProject
 ```
 
-## ⚠️ Warning
+## Use:
 
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -e .
+python3 albert.py
+```
