@@ -21,6 +21,7 @@ def run_albert(n_steps=1000, render=False, goal=True, obstacles=True):
     env: UrdfEnv = UrdfEnv(
         dt=0.01, robots=robots, render=render
     )
+    
     action = np.zeros(env.n())
     action[0] = 0.2
     action[1] = 0.0
