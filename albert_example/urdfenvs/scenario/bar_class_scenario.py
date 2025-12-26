@@ -95,16 +95,17 @@ class BarClassScenario:
         # Configuration: (x, y, z_offset, has_chairs)
         # We manually list them to match your specific layout
         
-        # Table 1
+        # Table 1 (x,y,z)
         self._load_table_group([-2.0, 1.0, 0.0])
-        # Table 2 (Some chairs commented out in your original code)
-        self._load_table_group([-2.0, -3.0, 0.0], skip_chairs=[0, 1]) # Example logic to skip specific chairs if needed
+        # Table 2 
+        # Example logic to skip specific chairs if needed use: self._load_table_group([-2.0, -3.0, 0.0], skip_chairs=[0, 1])
+        self._load_table_group([-2.0, -3.0, 0.0]) 
         # Table 3
-        self._load_table_group([-2.0, 6.0, 0.0], skip_chairs=[2, 3])
+        self._load_table_group([-2.0, 6.0, 0.0])
         # Table 4
-        self._load_table_group([3.0, 7.0, 0.0], skip_chairs=[2, 3])
+        self._load_table_group([3.0, 7.0, 0.0])
         # Table 5
-        self._load_table_group([3.0, -5.0, 0.0], skip_chairs=[2, 3])
+        self._load_table_group([3.0, -5.0, 0.0])
 
     def _load_table_group(self, pos, skip_chairs=[]):
         """
