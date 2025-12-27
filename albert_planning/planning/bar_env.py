@@ -1,5 +1,6 @@
 import numpy as np
 import pybullet as p
+import os
 from typing import List, Optional
 from urdfenvs.urdf_common.generic_robot import GenericRobot
 from urdfenvs.urdf_common.urdf_env import UrdfEnv

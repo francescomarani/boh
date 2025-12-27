@@ -7,7 +7,7 @@ from urdfenvs.robots.generic_urdf.generic_diff_drive_robot import GenericDiffDri
 from bar_env import BarEnvironment
 import visualization
 from models import DifferentialDriveDynamics
-from planning import BaseMPC
+from mpc_planning import BaseMPC
 from tqdm import tqdm
 
 class AlbertSimulation:
