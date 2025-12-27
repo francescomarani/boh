@@ -141,9 +141,9 @@ class BarEnvironment(UrdfEnv):
             'type': 'box',
             'geometry': {
                 'position': self.BAR_POS,
-                'width': self.BAR_SIZE[0],
+                'length': self.BAR_SIZE[0],
+                'width': self.BAR_SIZE[1],
                 'height': self.BAR_SIZE[2],
-                'length': self.BAR_SIZE[1],
             },
             'rgba': [0.6, 0.4, 0.2, 1.0],
             'movable': False,
@@ -156,9 +156,9 @@ class BarEnvironment(UrdfEnv):
                 'type': 'box',
                 'geometry': {
                     'position': [0, wall_offset_horiz, self.WALL_HEIGHT/2],
-                    'width': wall_size_horiz[0],
+                    'length': wall_size_horiz[0],
+                    'width': wall_size_horiz[1],
                     'height': wall_size_horiz[2],
-                    'length': wall_size_horiz[1],
                 },
                 'rgba': [0.5, 0.5, 0.5, 1.0],
                 'movable': False,
@@ -168,9 +168,9 @@ class BarEnvironment(UrdfEnv):
                 'type': 'box',
                 'geometry': {
                     'position': [0, -wall_offset_horiz, self.WALL_HEIGHT/2],
-                    'width': wall_size_horiz[0],
+                    'length': wall_size_horiz[0],
+                    'width': wall_size_horiz[1],
                     'height': wall_size_horiz[2],
-                    'length': wall_size_horiz[1],
                 },
                 'rgba': [0.5, 0.5, 0.5, 1.0],
                 'movable': False,
@@ -180,9 +180,9 @@ class BarEnvironment(UrdfEnv):
                 'type': 'box',
                 'geometry': {
                     'position': [wall_offset_vert, 0, self.WALL_HEIGHT/2],
-                    'width': wall_size_vert[0],
+                    'length': wall_size_vert[0],
+                    'width': wall_size_vert[1],
                     'height': wall_size_vert[2],
-                    'length': wall_size_vert[1],
                 },
                 'rgba': [0.5, 0.5, 0.5, 1.0],
                 'movable': False,
@@ -192,9 +192,9 @@ class BarEnvironment(UrdfEnv):
                 'type': 'box',
                 'geometry': {
                     'position': [-wall_offset_vert, 0, self.WALL_HEIGHT/2],
-                    'width': wall_size_vert[0],
+                    'length': wall_size_vert[0],
+                    'width': wall_size_vert[1],
                     'height': wall_size_vert[2],
-                    'length': wall_size_vert[1],
                 },
                 'rgba': [0.5, 0.5, 0.5, 1.0],
                 'movable': False,
@@ -527,73 +527,3 @@ class BarEnvironment(UrdfEnv):
             category: len(body_ids) 
             for category, body_ids in self.furniture_bodies.items()
         }
-
-
-# --- Usage Examples ---
-if __name__ == "__main__":
-    # Example 1: Basic usage with automatic scene setup
-    print("\n=== Example 1: Basic Usage ===")
-    
-    from urdfenvs.robots.generic_urdf import GenericUrdfReacher
-    
-    # Create robot (replace with your actual robot)
-    robots = [
-        GenericUrdfReacher(urdf="path/to/robot.urdf", mode="vel")
-    ]
-    
-    # Create environment - scene is setup automatically
-    env = BarEnvironment(
-        robots=robots,
-        render=True,
-        dt=0.01
-    )
-    
-    # Check what was loaded
-    print("\nFurniture loaded:", env.get_furniture_count())
-    
-    # Run simulation
-    obs, info = env.reset()
-    
-    for step in range(100):
-        action = env.action_space.sample()
-        obs, reward, terminated, truncated, info = env.step(action)
-        
-        if terminated or truncated:
-            obs, info = env.reset()
-            print(f"Episode finished at step {step}")
-    
-    env.close()
-    
-    
-    # Example 2: Manual scene setup with custom parameters
-    print("\n=== Example 2: Manual Setup ===")
-    
-    env = BarEnvironment(
-        robots=robots,
-        render=True,
-        dt=0.01,
-        auto_setup_scene=False,  # Don't setup automatically
-        chair_urdf_prefix="custom_path/chair",
-        table_urdf_prefix="custom_path/table"
-    )
-    
-    # Setup scene manually when ready
-    env.setup_bar_scene()
-    
-    obs, info = env.reset()
-    env.close()
-    
-    
-    # Example 3: Reset with scene reload
-    print("\n=== Example 3: Reset with Reload ===")
-    
-    env = BarEnvironment(robots=robots, render=True)
-    
-    obs, info = env.reset()
-    
-    # ... run for a while ...
-    
-    # Reset and reload entire scene (clears and rebuilds furniture)
-    obs, info = env.reset(reload_scene=True)
-    
-    env.close()
