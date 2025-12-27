@@ -36,6 +36,7 @@ class UrdfEnv(gym.Env):
         dt: float = 0.01,
         num_sub_steps: int = 20,
         observation_checking=True,
+        scenario=None,
     ) -> None:
         """Constructor for environment.
 
@@ -49,6 +50,7 @@ class UrdfEnv(gym.Env):
         render: Flag if simulator should render
         dt: Time step for pyhsics engine
         """
+        print("DEBUG: UrdfEnv is initializing...") # <--- Add this
         assert len(robots) > 0
         self._dt: float = dt
         self._t: float = 0.0
@@ -69,10 +71,19 @@ class UrdfEnv(gym.Env):
         self._observation_checking = observation_checking
         self._reward_calculator = None
         self.sensors = []
+
+        self._scenario = scenario  # Just store what was passed in of the scenario
+        
         self.connect_physics_engine()
         self._obsts = {}
         self._collision_links = {}
         self._goals = {}
+
+        # Loading scenario: Setup Scenario if provided
+        if self._scenario is not None:
+            print("Importing Bar Scenario...")
+            self._scenario.setup(self)
+
         self.set_spaces()
 
     def connect_physics_engine(self):
