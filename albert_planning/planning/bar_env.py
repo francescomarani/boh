@@ -1,5 +1,6 @@
 import numpy as np
 import pybullet as p
+import os
 from typing import List, Optional
 from urdfenvs.urdf_common.generic_robot import GenericRobot
 from urdfenvs.urdf_common.urdf_env import UrdfEnv
@@ -80,10 +81,11 @@ class BarEnvironment(UrdfEnv):
         )
         
         # Store URDF paths
-        self.bar_cabinet_urdf = bar_cabinet_urdf
-        self.barstool_urdf = barstool_urdf
-        self.chair_urdf_prefix = chair_urdf_prefix
-        self.table_urdf_prefix = table_urdf_prefix
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.bar_cabinet_urdf = os.path.join(base_dir, bar_cabinet_urdf)
+        self.barstool_urdf = os.path.join(base_dir, barstool_urdf)
+        self.chair_urdf_prefix = os.path.join(base_dir, chair_urdf_prefix)
+        self.table_urdf_prefix = os.path.join(base_dir, table_urdf_prefix)
         self.furniture_as_obstacles = furniture_as_obstacles
         
         # Counters for unique URDFs
