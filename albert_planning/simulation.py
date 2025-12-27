@@ -95,7 +95,7 @@ class AlbertSimulation:
         u_real = np.zeros((2, T))  # [v, omega]
         
         # Get initial state from environment using PyBullet API
-        x_real[:,0]= ob['robot_0']["joint_state"]["position"][0:3]
+        x_real[:, 0] = ob['robot_0']["joint_state"]["position"][0:3]
         
         # IMPORTANT: Determine the total action dimension from environment
         # The environment expects action for base + arm + gripper
