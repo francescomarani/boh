@@ -4,10 +4,10 @@ import numpy as np
 import pybullet as p
 import matplotlib.pyplot as plt
 from urdfenvs.robots.generic_urdf.generic_diff_drive_robot import GenericDiffDriveRobot
-from bar_env import BarEnvironment as UrdfEnv
+from bar_env import BarEnvironment
 import visualization
 from models import DifferentialDriveDynamics
-from mpc_planning import BaseMPC
+from planning import BaseMPC
 from tqdm import tqdm
 
 class AlbertSimulation:
@@ -65,10 +65,10 @@ class AlbertSimulation:
                 facing_direction = '-y',
             ),
         ]
-
-        env: UrdfEnv = UrdfEnv(
+        env: BarEnvironment = BarEnvironment(
             dt=self.dt, robots=robots, render=render
         )
+        
         # Reset environment with initial configuration
         ob = env.reset(
             pos=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.5, 0.0, 1.8, 0.5])
@@ -95,7 +95,7 @@ class AlbertSimulation:
         u_real = np.zeros((2, T))  # [v, omega]
         
         # Get initial state from environment using PyBullet API
-        x_real[:, 0] = ob['robot_0']["joint_state"]["position"][0:3]
+        x_real[:,0]= ob['robot_0']["joint_state"]["position"][0:3]
         
         # IMPORTANT: Determine the total action dimension from environment
         # The environment expects action for base + arm + gripper
