@@ -1,2 +1,14 @@
-albert_example/urdfenvs.egg-info/*
-albert_example/venv/*
+# Python
+__pycache__/
+*.pyc
+albert_planning/planning/__pycache__/
+albert_planning/urdfenvs/__pycache__/
+albert_planning/urdfenvs/robots/generic_urdf/__pycache__/
+
+# Virtual environments
+venv/
+albert_planning/venv/
+
+# Egg info
+*.egg-info/
+albert_planning/urdfenvs.egg-info/
