@@ -303,14 +303,20 @@ def extract_obstacles_from_environment(env) -> List[Obstacle]:
     if hasattr(env, '_obsts') and env._obsts:
         for name, obs_info in env._obsts.items():
             try:
-                # Get obstacle position (handle different formats)
-                if hasattr(obs_info, 'position'):
-                    pos = obs_info.position
+                # Skip walls - they have huge bounding circles and are handled by state bounds
+                name_str = str(name)
+                if 'wall' in name_str.lower():
+                    continue
+
+                # Get obstacle position - it's a method in mpscenes, not an attribute
+                if callable(getattr(obs_info, 'position', None)):
+                    pos = np.array(obs_info.position())
                 elif hasattr(obs_info, 'position'):
-                    pos = obs_info.position()
+                    pos = np.array(obs_info.position)
                 else:
                     # Try to get from content dict
                     pos = obs_info.content_dict.get('geometry', {}).get('position', [0, 0, 0])
+                    pos = np.array(pos)
 
                 # Determine obstacle type and size
                 obs_type = 'circle'  # Default
@@ -331,7 +337,7 @@ def extract_obstacles_from_environment(env) -> List[Obstacle]:
                         size = np.array([length, width])
 
                 obstacle = Obstacle(
-                    name=name,
+                    name=name_str,
                     obs_type=obs_type,
                     position=pos,
                     radius=radius if obs_type == 'circle' else None,
@@ -342,9 +348,11 @@ def extract_obstacles_from_environment(env) -> List[Obstacle]:
             except Exception as e:
                 print(f"Warning: Could not extract obstacle '{name}': {e}")
 
-    print(f"Extracted {len(obstacles)} obstacles from environment")
-    for obs in obstacles:
+    print(f"Extracted {len(obstacles)} obstacles from environment (walls excluded)")
+    for obs in obstacles[:10]:  # Print first 10 only
         print(f"  - {obs}")
+    if len(obstacles) > 10:
+        print(f"  ... and {len(obstacles) - 10} more")
 
     return obstacles
 
@@ -355,6 +363,9 @@ def create_obstacles_from_bar_layout() -> List[Obstacle]:
 
     This is a fallback function that creates obstacles based on the known
     bar environment layout, useful when obstacle extraction fails.
+
+    Note: Walls are NOT included - they have huge bounding circles that would
+    make the problem infeasible. State bounds already prevent going outside.
 
     Returns:
         List of Obstacle objects matching bar_env.py layout
@@ -369,14 +380,7 @@ def create_obstacles_from_bar_layout() -> List[Obstacle]:
         size=np.array([0.6, 5.0])
     ))
 
-    # Walls (approximate as long boxes)
-    room_half_h = 10.0  # Half of horizontal room size (20m)
-    room_half_v = 5.0   # Half of vertical room size (10m)
-
-    obstacles.append(Obstacle("wall_top", "box", np.array([0.0, room_half_h]), size=np.array([room_half_v * 2, 0.2])))
-    obstacles.append(Obstacle("wall_bottom", "box", np.array([0.0, -room_half_h]), size=np.array([room_half_v * 2, 0.2])))
-    obstacles.append(Obstacle("wall_right", "box", np.array([room_half_v, 0.0]), size=np.array([0.2, room_half_h * 2])))
-    obstacles.append(Obstacle("wall_left", "box", np.array([-room_half_v, 0.0]), size=np.array([0.2, room_half_h * 2])))
+    # NOTE: Walls excluded - bounding circles too large, state bounds handle room limits
 
     # Barstools
     barstool_positions = [0.0, 1.0, -1.0, 2.0, -2.0]
@@ -430,5 +434,5 @@ def create_obstacles_from_bar_layout() -> List[Obstacle]:
             size=np.array([0.6, 0.5])
         ))
 
-    print(f"Created {len(obstacles)} obstacles from bar layout")
+    print(f"Created {len(obstacles)} obstacles from bar layout (walls excluded)")
     return obstacles
