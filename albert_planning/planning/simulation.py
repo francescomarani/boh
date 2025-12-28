@@ -107,16 +107,9 @@ class AlbertSimulation:
             print("COLLISION AVOIDANCE ENABLED")
             print("=" * 60)
 
-            # Extract obstacles from environment or use predefined layout
-            try:
-                obstacle_list = extract_obstacles_from_environment(env)
-                if len(obstacle_list) == 0:
-                    print("No obstacles extracted, using predefined bar layout...")
-                    obstacle_list = create_obstacles_from_bar_layout()
-            except Exception as e:
-                print(f"Obstacle extraction failed: {e}")
-                print("Using predefined bar layout...")
-                obstacle_list = create_obstacles_from_bar_layout()
+            # Use predefined bar layout (more reliable than extraction)
+            # The extracted obstacles have incorrect radii and names
+            obstacle_list = create_obstacles_from_bar_layout()
 
             # Create collision-aware MPC
             self.base_mpc = CollisionAvoidanceMPC(
@@ -394,23 +387,23 @@ if __name__ == "__main__":
         # Set enable_collision_avoidance=True to enable obstacle avoidance
         # Set enable_collision_avoidance=False for standard MPC (no obstacles)
 
-        # Choose target that requires navigating around obstacles
-        # Target: navigate from start to the other side of the bar
-        x_target = np.array([-3., -2., 0.])  # Target behind tables
+        # Choose target in open area (avoiding tight spaces between furniture)
+        # Target: navigate to open area on the left side of the room
+        x_target = np.array([-4., 3., 0.])  # Open area, away from tables
 
         # Create simulation with collision avoidance
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
-            Base_N=50,  # Prediction horizon
-            T=500,  # Max timesteps
+            Base_N=30,  # Shorter horizon for faster computation
+            T=400,  # Max timesteps
             x_init=np.array([0., 0., 0.]),
             x_target=x_target,
             # Collision avoidance parameters
             enable_collision_avoidance=True,  # Set to False to disable
             robot_radius=0.35,  # Albert robot radius (approximate)
-            safety_margin=0.15,  # Extra clearance from obstacles
-            use_soft_constraints=False,  # True: penalty in cost, False: hard constraints
-            soft_constraint_weight=100.0  # Weight for soft constraints (if enabled)
+            safety_margin=0.10,  # Smaller margin for tighter spaces
+            use_soft_constraints=True,  # Soft constraints are more robust
+            soft_constraint_weight=50.0  # Weight for soft constraints
         )
 
         # Run simulation
