@@ -8,14 +8,26 @@ from bar_env import BarEnvironment
 import visualization
 from models import DifferentialDriveDynamics
 from mpc_planning import BaseMPC
+from collision_avoidance_mpc import (
+    CollisionAvoidanceMPC,
+    Obstacle,
+    extract_obstacles_from_environment,
+    create_obstacles_from_bar_layout
+)
 from tqdm import tqdm
 
 class AlbertSimulation:
     def __init__(self, dt=0.01, Base_N=20, Arm_N=10,
                  T=50, x_init=np.array([0., 1., 0.]),
-                 x_target=np.array([5., 0., 0.])):
+                 x_target=np.array([5., 0., 0.]),
+                 # Collision avoidance parameters
+                 enable_collision_avoidance=True,
+                 robot_radius=0.35,
+                 safety_margin=0.15,
+                 use_soft_constraints=False,
+                 soft_constraint_weight=100.0):
         self.dt = dt  # Simulation timestep
-        
+
         # MPC PARAMETERS
         self.Base_N = Base_N  # Base MPC time horizon
         self.Arm_N = Arm_N    # Arm MPC time horizon
@@ -23,20 +35,26 @@ class AlbertSimulation:
         INPUT_WEIGHT = 20
         SOLVER_MAX_ITER = 30
         DO_WARM_START = True  # Warm start flag
-        
+
         self.T = T  # Total simulation time steps
         self.plot_trajectories = False  # Plot trajectories flag
-        self.x_init = x_init  # Initial state 
+        self.x_init = x_init  # Initial state
         self.x_target = x_target  # Target state
-        
+
+        # Collision avoidance parameters
+        self.enable_collision_avoidance = enable_collision_avoidance
+        self.robot_radius = robot_radius
+        self.safety_margin = safety_margin
+        self.use_soft_constraints = use_soft_constraints
+        self.soft_constraint_weight = soft_constraint_weight
+
         # Vehicle dynamics model
         self.base_model = DifferentialDriveDynamics(dt)
-        
-        # Base MPC controller
-        self.base_mpc = BaseMPC(self.base_model, Base_N, self.x_target,
-                                STATE_WEIGHT, INPUT_WEIGHT, 
-                                SOLVER_MAX_ITER, DO_WARM_START)
-        
+
+        # MPC controller will be initialized in run_albert() after environment is created
+        # This allows us to extract obstacles from the environment
+        self.base_mpc = None
+
         # PyBullet robot ID (will be set in run_albert)
         self.robot_id = None
         self.base_joint_indices = None
@@ -44,12 +62,12 @@ class AlbertSimulation:
     def run_albert(self, render=False, goal=True, obstacles=True):
         """
         Initialize and run the Albert robot simulation
-        
+
         Args:
             render: Enable rendering
             goal: Include goal visualization
             obstacles: Include obstacles
-            
+
         Returns:
             history: Simulation history
         """
@@ -59,25 +77,78 @@ class AlbertSimulation:
                 mode="vel",
                 actuated_wheels=["wheel_right_joint", "wheel_left_joint"],
                 castor_wheels=["rotacastor_right_joint", "rotacastor_left_joint"],
-                wheel_radius = 0.08,
-                wheel_distance = 0.494,
-                spawn_rotation = 0,
-                facing_direction = '-y',
+                wheel_radius=0.08,
+                wheel_distance=0.494,
+                spawn_rotation=0,
+                facing_direction='-y',
             ),
         ]
         env: BarEnvironment = BarEnvironment(
-            dt=self.dt, robots=robots, render=render
+            dt=self.dt, robots=robots, render=render,
+            furniture_as_obstacles=self.enable_collision_avoidance
         )
-        
+
         # Reset environment with initial configuration
         ob = env.reset(
             pos=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.5, 0.0, 1.8, 0.5])
         )
         print(f"Initial observation: {ob}")
-        
+
         self.env = env
+
+        # Initialize MPC controller
+        STATE_WEIGHT = 50.0
+        INPUT_WEIGHT = 20
+        SOLVER_MAX_ITER = 30
+        DO_WARM_START = True
+
+        if self.enable_collision_avoidance:
+            print("\n" + "=" * 60)
+            print("COLLISION AVOIDANCE ENABLED")
+            print("=" * 60)
+
+            # Extract obstacles from environment or use predefined layout
+            try:
+                obstacle_list = extract_obstacles_from_environment(env)
+                if len(obstacle_list) == 0:
+                    print("No obstacles extracted, using predefined bar layout...")
+                    obstacle_list = create_obstacles_from_bar_layout()
+            except Exception as e:
+                print(f"Obstacle extraction failed: {e}")
+                print("Using predefined bar layout...")
+                obstacle_list = create_obstacles_from_bar_layout()
+
+            # Create collision-aware MPC
+            self.base_mpc = CollisionAvoidanceMPC(
+                dynamics=self.base_model,
+                N=self.Base_N,
+                x_target=self.x_target,
+                wx=STATE_WEIGHT,
+                wu=INPUT_WEIGHT,
+                obstacles=obstacle_list,
+                robot_radius=self.robot_radius,
+                safety_margin=self.safety_margin,
+                use_soft_constraints=self.use_soft_constraints,
+                soft_constraint_weight=self.soft_constraint_weight,
+                SOLVER_MAX_ITER=SOLVER_MAX_ITER,
+                DO_WARM_START=DO_WARM_START
+            )
+            self.obstacles = obstacle_list
+        else:
+            print("\n" + "=" * 60)
+            print("COLLISION AVOIDANCE DISABLED (using standard MPC)")
+            print("=" * 60)
+
+            # Create standard MPC without collision avoidance
+            self.base_mpc = BaseMPC(
+                self.base_model, self.Base_N, self.x_target,
+                STATE_WEIGHT, INPUT_WEIGHT,
+                SOLVER_MAX_ITER, DO_WARM_START
+            )
+            self.obstacles = []
+
         history = self.simulate(ob[0])
-        
+
         env.close()
         return history
     
@@ -158,9 +229,18 @@ class AlbertSimulation:
             
             # Print progress every 10 steps
             if t % 10 == 0:
-                print(f"\nStep {t}: pos=({x_real[0,t]:.2f}, {x_real[1,t]:.2f}), "
-                      f"θ={x_real[2,t]:.2f}, dist={distance:.2f}m, "
-                      f"u=({u_base[0]:.3f}, {u_base[1]:.3f})")
+                progress_msg = (f"\nStep {t}: pos=({x_real[0,t]:.2f}, {x_real[1,t]:.2f}), "
+                               f"θ={x_real[2,t]:.2f}, dist={distance:.2f}m, "
+                               f"u=({u_base[0]:.3f}, {u_base[1]:.3f})")
+
+                # Show obstacle distance if collision avoidance is enabled
+                if hasattr(self.base_mpc, 'get_min_obstacle_distance'):
+                    min_obs_dist, obs_name = self.base_mpc.get_min_obstacle_distance(x_current)
+                    if min_obs_dist < float('inf'):
+                        clearance = min_obs_dist - self.robot_radius
+                        progress_msg += f", obs_dist={clearance:.2f}m ({obs_name})"
+
+                print(progress_msg)
         
         # Plot trajectories using existing visualization code
         if self.plot_trajectories:
@@ -173,22 +253,43 @@ class AlbertSimulation:
         return history, x_real, u_real, x_all
 
 
-def plot_results(x_real, u_real, x_target, dt, save_path='albert_mpc_results.png'):
+def plot_results(x_real, u_real, x_target, dt, save_path='albert_mpc_results.png',
+                 obstacles=None, robot_radius=0.35):
     """
     Create comprehensive visualization of MPC results
-    
+
     Args:
         x_real: State trajectory (3, T+1) [x, y, theta]
         u_real: Control input trajectory (2, T) [v, omega]
         x_target: Target state (3,) [x, y, theta]
         dt: Timestep
         save_path: Path to save figure
+        obstacles: List of Obstacle objects to visualize
+        robot_radius: Robot radius for visualization
     """
     fig = plt.figure(figsize=(16, 10))
     gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
-    
+
     # 1. 2D Trajectory with orientation arrows
     ax1 = fig.add_subplot(gs[0:2, 0:2])
+
+    # Plot obstacles first (behind trajectory)
+    if obstacles is not None and len(obstacles) > 0:
+        for obs in obstacles:
+            if obs.type == 'circle':
+                circle = plt.Circle(obs.position, obs.radius,
+                                    color='red', alpha=0.3, zorder=1)
+                ax1.add_patch(circle)
+            elif obs.type == 'box':
+                # Draw rectangle centered at position
+                half_size = obs.size / 2
+                rect = plt.Rectangle(
+                    (obs.position[0] - half_size[0], obs.position[1] - half_size[1]),
+                    obs.size[0], obs.size[1],
+                    color='red', alpha=0.3, zorder=1
+                )
+                ax1.add_patch(rect)
+
     ax1.plot(x_real[0, :], x_real[1, :], 'b-', linewidth=2.5, label='Robot trajectory')
     ax1.plot(x_real[0, 0], x_real[1, 0], 'go', markersize=12, label='Start', zorder=5)
     ax1.plot(x_target[0], x_target[1], 'r*', markersize=20, label='Goal', zorder=5)
@@ -283,22 +384,40 @@ def plot_results(x_real, u_real, x_target, dt, save_path='albert_mpc_results.png
 if __name__ == "__main__":
     show_warnings = False
     warning_flag = "default" if show_warnings else "ignore"
-    
+
     with warnings.catch_warnings():
         warnings.filterwarnings(warning_flag)
-        
-        # Create simulation with reasonable target
+
+        # =====================================================================
+        # COLLISION AVOIDANCE MPC SIMULATION
+        # =====================================================================
+        # Set enable_collision_avoidance=True to enable obstacle avoidance
+        # Set enable_collision_avoidance=False for standard MPC (no obstacles)
+
+        # Choose target that requires navigating around obstacles
+        # Target: navigate from start to the other side of the bar
+        x_target = np.array([-3., -2., 0.])  # Target behind tables
+
+        # Create simulation with collision avoidance
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
-            Base_N=70,
-            T=800,  # More timesteps to reach goal
+            Base_N=50,  # Prediction horizon
+            T=500,  # Max timesteps
             x_init=np.array([0., 0., 0.]),
-            x_target=np.array([20., -10., 2.])  # Target 
+            x_target=x_target,
+            # Collision avoidance parameters
+            enable_collision_avoidance=True,  # Set to False to disable
+            robot_radius=0.35,  # Albert robot radius (approximate)
+            safety_margin=0.15,  # Extra clearance from obstacles
+            use_soft_constraints=False,  # True: penalty in cost, False: hard constraints
+            soft_constraint_weight=100.0  # Weight for soft constraints (if enabled)
         )
-        
+
         # Run simulation
         history, x_real, u_real, x_all = sim.run_albert(render=True)
-        
-        # Plot comprehensive results
-        plot_results(x_real, u_real, sim.x_target, sim.dt, 
-                     save_path='albert_mpc_results.png')
+
+        # Plot comprehensive results with obstacles
+        plot_results(x_real, u_real, sim.x_target, sim.dt,
+                     save_path='albert_mpc_collision_avoidance_results.png',
+                     obstacles=sim.obstacles if hasattr(sim, 'obstacles') else None,
+                     robot_radius=sim.robot_radius)
