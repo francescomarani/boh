@@ -1,9 +1,16 @@
 # Python
+# Python bytecode / caches
 __pycache__/
+**/__pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.py[cod]
+# explicit repo paths (defensive against already-added files)
 albert_planning/planning/__pycache__/
 albert_planning/urdfenvs/__pycache__/
 albert_planning/urdfenvs/robots/generic_urdf/__pycache__/
+albert_planning/urdfenvs/robots/__pycache__/
 
 # Virtual environments
 venv/

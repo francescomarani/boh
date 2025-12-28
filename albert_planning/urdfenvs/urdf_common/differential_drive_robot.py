@@ -251,6 +251,7 @@ ignored for differential drive robots."
                     self._robot_joints[axis * 2 + i],
                     controlMode=p.VELOCITY_CONTROL,
                     targetVelocity=vels[i],
+                    force=self._limit_tor_j[1, axis * 2 + i] if hasattr(self, "_limit_tor_j") else 5.0,
                 )
 
     def apply_base_velocity(self, vels: np.ndarray) -> None:
@@ -280,6 +281,7 @@ ignored for differential drive robots."
                 self._robot_joints[i],
                 controlMode=p.VELOCITY_CONTROL,
                 targetVelocity=vels[i],
+                force=self._limit_tor_j[1, i] if hasattr(self, "_limit_tor_j") else 2.0,
             )
 
     def correct_base_orientation(self, pos_base: np.ndarray) -> np.ndarray:

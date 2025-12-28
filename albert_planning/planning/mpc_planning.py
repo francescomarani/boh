@@ -1,5 +1,6 @@
 import numpy as np
 import casadi as cs
+import pybullet as p
 
 
 class BaseMPC:
@@ -184,10 +185,13 @@ class ArmMPC:
 
     - Dynamics: q_{k+1} = q_k + dt * u_k (u = joint velocities)
     - Cost: sum_k wq * ||q_k - q_target||^2 + wu * ||u_k||^2
+    - Optional slew regularization, command speed clamp, and task-space goal
+      conversion via `set_task_space_goal`.
     - Uses CasADi Opti and warm-starting like BaseMPC.
     """
     def __init__(self, robot, arm_indices, N, dt, q_target_arm,
-                 wq=100.0, wu=1.0, SOLVER_MAX_ITER=50, DO_WARM_START=True):
+                 wq=50.0, wu=5.0, terminal_wq=None, u_slew_weight=0.0,
+                 max_joint_speed=None, SOLVER_MAX_ITER=50, DO_WARM_START=True):
         self.robot = robot
         self.arm_idxs = list(arm_indices)
         self.N = int(N)
@@ -196,13 +200,27 @@ class ArmMPC:
         self.q_target = np.asarray(q_target_arm).reshape(self.n)
         self.wq = float(wq)
         self.wu = float(wu)
+        self.terminal_wq = float(terminal_wq) if terminal_wq is not None else 10.0 * float(wq)
+        self.u_slew_weight = float(u_slew_weight)
         self.max_iter = SOLVER_MAX_ITER
         self.warm_start = DO_WARM_START
+        if max_joint_speed is None:
+            self.cmd_speed_limit = None
+        else:
+            speed_arr = np.asarray(max_joint_speed)
+            if speed_arr.size == 1:
+                speed_arr = np.ones(self.n) * float(speed_arr)
+            self.cmd_speed_limit = speed_arr.reshape(self.n)
+        self.end_link_index = None
 
         # Build simple bounds from robot if available (safe fallback if not)
         try:
             # robot._limit_vel_j: shape (2, n_joints) -> second row is max velocities
-            u_max = np.array([abs(self.robot._limit_vel_j[1, idx]) for idx in self.arm_idxs])
+            u_max = np.array(
+                [abs(self.robot._limit_vel_j[1, idx + 1]) for idx in self.arm_idxs]
+            )
+            # Avoid degenerate zero-velocity limits
+            u_max = np.where(u_max < 1e-3, 0.5, u_max)
             u_min = -u_max
         except Exception:
             u_max = np.ones(self.n) * 1.0
@@ -222,7 +240,9 @@ class ArmMPC:
         self.q_max = q_max
 
         # Build casadi problem
-        self.opti, self.Q_var, self.U_var, self.p_q_init = self._create_optimization_problem()
+        self.opti, self.Q_var, self.U_var, self.p_q_init, self.p_q_target = (
+            self._create_optimization_problem()
+        )
 
     def _create_optimization_problem(self):
         opti = cs.Opti()
@@ -233,24 +253,28 @@ class ArmMPC:
         for k in range(self.N):
             opti.subject_to(opti.bounded(self.u_min, U[k], self.u_max))
 
-        # Initial condition parameter
+        # Parameters: initial state and target state (set at each solve)
         p_q_init = opti.parameter(self.n)
+        p_q_target = opti.parameter(self.n)
         opti.subject_to(Q[0] == p_q_init)
 
         # Dynamics & costs
         cost = 0
         for k in range(self.N):
-            pos_err = Q[k] - self.q_target
+            pos_err = Q[k] - p_q_target
             cost += self.wq * (pos_err.T @ pos_err)
             cost += self.wu * (U[k].T @ U[k])
+            if self.u_slew_weight > 0 and k > 0:
+                du = U[k] - U[k - 1]
+                cost += self.u_slew_weight * (du.T @ du)
             # Euler dynamics
             opti.subject_to(Q[k + 1] == Q[k] + self.dt * U[k])
             # Position bounds
             opti.subject_to(opti.bounded(self.q_min, Q[k], self.q_max))
 
         # Terminal cost and bounds
-        term_err = Q[-1] - self.q_target
-        cost += 10.0 * (term_err.T @ term_err)
+        term_err = Q[-1] - p_q_target
+        cost += self.terminal_wq * (term_err.T @ term_err)
         opti.subject_to(opti.bounded(self.q_min, Q[-1], self.q_max))
 
         opti.minimize(cost)
@@ -258,20 +282,21 @@ class ArmMPC:
         opts = {
             "ipopt.print_level": 0,
             "print_time": 0,
-            "ipopt.max_iter": 1000,
+            "ipopt.max_iter": 500,
             "ipopt.tol": 1e-4,
         }
         opti.solver("ipopt", opts)
 
         # initial solve to initialize
         opti.set_value(p_q_init, np.zeros(self.n))
+        opti.set_value(p_q_target, np.zeros(self.n))
         opti.solve()
 
         # reduce max_iter for subsequent solves
         opts["ipopt.max_iter"] = self.max_iter
         opti.solver("ipopt", opts)
 
-        return opti, Q, U, p_q_init
+        return opti, Q, U, p_q_init, p_q_target
 
     def solve(self, q_init):
         q_init = np.asarray(q_init).reshape(self.n)
@@ -280,7 +305,11 @@ class ArmMPC:
 
         try:
             self.opti.set_value(self.p_q_init, q_init)
+            self.opti.set_value(self.p_q_target, self.q_target)
             sol = self.opti.solve()
+            stats = sol.stats()
+            if stats.get("return_status", "") != "Solve_Succeeded":
+                print(f"[ArmMPC] Solver status: {stats.get('return_status')}, iter={stats.get('iter_count')}")
 
             if self.warm_start:
                 for k in range(self.N):
@@ -293,6 +322,29 @@ class ArmMPC:
             u_opt = np.array(sol.value(self.U_var[0])).reshape(self.n)
             q_next = np.array(sol.value(self.Q_var[1])).reshape(self.n)
 
+            # Post-solve safety: gently slow down overly aggressive commands
+            if self.cmd_speed_limit is not None:
+                limit = np.minimum(np.abs(self.u_max), np.abs(self.cmd_speed_limit))
+                u_opt = np.clip(u_opt, -limit, limit)
+                q_next = q_init + self.dt * u_opt  # keep return consistent with clipped command
+
+            # Quick objective diagnostics for debugging stuck solutions
+            try:
+                pos_cost = 0.0
+                ctrl_cost = 0.0
+                q_target = np.array(self.opti.value(self.p_q_target)).reshape(self.n)
+                for k in range(self.N):
+                    qk = np.array(sol.value(self.Q_var[k])).reshape(self.n)
+                    uk = np.array(sol.value(self.U_var[k])).reshape(self.n)
+                    pos_cost += self.wq * np.dot(qk - q_target, qk - q_target)
+                    ctrl_cost += self.wu * np.dot(uk, uk)
+                if self.terminal_wq:
+                    qT = np.array(sol.value(self.Q_var[-1])).reshape(self.n)
+                    pos_cost += self.terminal_wq * np.dot(qT - q_target, qT - q_target)
+                print(f"[ArmMPC] cost pos={pos_cost:.3f} ctrl={ctrl_cost:.3f}")
+            except Exception:
+                pass
+
             q_traj = np.zeros((self.n, self.N + 1))
             for k in range(self.N + 1):
                 q_traj[:, k] = np.array(sol.value(self.Q_var[k])).reshape(self.n)
@@ -304,3 +356,44 @@ class ArmMPC:
             u_safe = np.zeros(self.n)
             q_traj = np.tile(q_init.reshape(-1, 1), (1, self.N + 1))
             return u_safe, q_init, q_traj
+
+    def set_task_space_goal(self, goal_world_xyz, end_link_index=None):
+        """
+        Convert a Cartesian goal to a joint-space target via PyBullet IK.
+
+        Args:
+            goal_world_xyz: 3-array world-frame position for the end-effector
+            end_link_index: optional PyBullet link index; defaults to the last arm joint
+        """
+        if end_link_index is None:
+            try:
+                end_link_index = self.robot._robot_joints[self.arm_idxs[-1]]
+            except Exception as e:
+                raise RuntimeError(f"Unable to infer end link index for IK: {e}")
+
+        ik_solution = p.calculateInverseKinematics(self.robot._robot, end_link_index, goal_world_xyz)
+
+        q_goal = np.zeros(self.n)
+        for i_local, flat_idx in enumerate(self.arm_idxs):
+            pb_idx = self.robot._robot_joints[flat_idx]
+            if pb_idx < len(ik_solution):
+                q_goal[i_local] = ik_solution[pb_idx]
+
+        q_goal = np.clip(q_goal, self.q_min, self.q_max)
+        self.q_target = q_goal
+        try:
+            self.opti.set_value(self.p_q_target, self.q_target)
+        except Exception:
+            pass
+        self.end_link_index = end_link_index
+        return q_goal
+
+    def current_ee_position(self, end_link_index=None):
+        """
+        Return the current end-effector position (world frame) for debugging.
+        """
+        idx = end_link_index if end_link_index is not None else self.end_link_index
+        if idx is None:
+            idx = self.robot._robot_joints[self.arm_idxs[-1]]
+        state = p.getLinkState(self.robot._robot, idx, computeLinkVelocity=0)
+        return np.array(state[0])
