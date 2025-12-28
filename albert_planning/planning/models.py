@@ -20,8 +20,11 @@ class DifferentialDriveDynamics:
         self.input_dim = 2  # [v, omega]
         
         # Limits on state [x, y, theta]
-        self.x_min = np.array([-10., -10., -2*np.pi])
-        self.x_max = np.array([100., 100., 2*np.pi])
+        # Must match room dimensions in bar_env.py:
+        # ROOM_SIZE_VERT = 10.0 (x: -5 to +5)
+        # ROOM_SIZE_HORIZ = 20.0 (y: -10 to +10)
+        self.x_min = np.array([-5., -10., -2*np.pi])
+        self.x_max = np.array([5., 10., 2*np.pi])
         
         # Limits on input [v, omega]
         self.u_min = np.array([-1.0, -2.0])
