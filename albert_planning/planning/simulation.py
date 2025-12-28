@@ -395,16 +395,16 @@ if __name__ == "__main__":
         # Create simulation with collision avoidance
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
-            Base_N=30,  # Shorter horizon for faster computation
-            T=400,  # Max timesteps
+            Base_N=50,  # Longer horizon to see obstacles ahead
+            T=600,  # Max timesteps
             x_init=np.array([0., 0., 0.]),
             x_target=x_target,
             # Collision avoidance parameters
             enable_collision_avoidance=True,  # Set to False to disable
             robot_radius=0.35,  # Albert robot radius (approximate)
-            safety_margin=0.10,  # Smaller margin for tighter spaces
-            use_soft_constraints=True,  # Soft constraints are more robust
-            soft_constraint_weight=50.0  # Weight for soft constraints
+            safety_margin=0.15,  # Safety margin
+            use_soft_constraints=False,  # Hard constraints for guaranteed avoidance
+            soft_constraint_weight=200.0  # Not used when hard constraints are enabled
         )
 
         # Run simulation
