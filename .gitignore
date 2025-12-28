@@ -1,2 +1,5 @@
 albert_example/urdfenvs.egg-info/*
 albert_example/venv/*
+__pycache__/
+*.pyc
+*.pyo
