@@ -177,3 +177,130 @@ class BaseMPC:
                                         x_init[1] if len(x_init) > 1 else 0.0,
                                         0.0])
                 return u_safe, x_init_fixed, x_traj, 0.0
+            
+class ArmMPC:
+    """
+    Joint-space MPC for a subset of arm joints.
+
+    - Dynamics: q_{k+1} = q_k + dt * u_k (u = joint velocities)
+    - Cost: sum_k wq * ||q_k - q_target||^2 + wu * ||u_k||^2
+    - Uses CasADi Opti and warm-starting like BaseMPC.
+    """
+    def __init__(self, robot, arm_indices, N, dt, q_target_arm,
+                 wq=100.0, wu=1.0, SOLVER_MAX_ITER=50, DO_WARM_START=True):
+        self.robot = robot
+        self.arm_idxs = list(arm_indices)
+        self.N = int(N)
+        self.dt = float(dt)
+        self.n = len(self.arm_idxs)
+        self.q_target = np.asarray(q_target_arm).reshape(self.n)
+        self.wq = float(wq)
+        self.wu = float(wu)
+        self.max_iter = SOLVER_MAX_ITER
+        self.warm_start = DO_WARM_START
+
+        # Build simple bounds from robot if available (safe fallback if not)
+        try:
+            # robot._limit_vel_j: shape (2, n_joints) -> second row is max velocities
+            u_max = np.array([abs(self.robot._limit_vel_j[1, idx]) for idx in self.arm_idxs])
+            u_min = -u_max
+        except Exception:
+            u_max = np.ones(self.n) * 1.0
+            u_min = -u_max
+
+        try:
+            # robot._limit_pos_j: shape (2, n_joints+1?) try safe indexing
+            q_min = np.array([self.robot._limit_pos_j[0, idx + 1] for idx in self.arm_idxs])
+            q_max = np.array([self.robot._limit_pos_j[1, idx + 1] for idx in self.arm_idxs])
+        except Exception:
+            q_min = np.ones(self.n) * -10.0
+            q_max = np.ones(self.n) * 10.0
+
+        self.u_min = u_min
+        self.u_max = u_max
+        self.q_min = q_min
+        self.q_max = q_max
+
+        # Build casadi problem
+        self.opti, self.Q_var, self.U_var, self.p_q_init = self._create_optimization_problem()
+
+    def _create_optimization_problem(self):
+        opti = cs.Opti()
+        Q = [opti.variable(self.n) for _ in range(self.N + 1)]
+        U = [opti.variable(self.n) for _ in range(self.N)]
+
+        # Input bounds
+        for k in range(self.N):
+            opti.subject_to(opti.bounded(self.u_min, U[k], self.u_max))
+
+        # Initial condition parameter
+        p_q_init = opti.parameter(self.n)
+        opti.subject_to(Q[0] == p_q_init)
+
+        # Dynamics & costs
+        cost = 0
+        for k in range(self.N):
+            pos_err = Q[k] - self.q_target
+            cost += self.wq * (pos_err.T @ pos_err)
+            cost += self.wu * (U[k].T @ U[k])
+            # Euler dynamics
+            opti.subject_to(Q[k + 1] == Q[k] + self.dt * U[k])
+            # Position bounds
+            opti.subject_to(opti.bounded(self.q_min, Q[k], self.q_max))
+
+        # Terminal cost and bounds
+        term_err = Q[-1] - self.q_target
+        cost += 10.0 * (term_err.T @ term_err)
+        opti.subject_to(opti.bounded(self.q_min, Q[-1], self.q_max))
+
+        opti.minimize(cost)
+
+        opts = {
+            "ipopt.print_level": 0,
+            "print_time": 0,
+            "ipopt.max_iter": 1000,
+            "ipopt.tol": 1e-4,
+        }
+        opti.solver("ipopt", opts)
+
+        # initial solve to initialize
+        opti.set_value(p_q_init, np.zeros(self.n))
+        opti.solve()
+
+        # reduce max_iter for subsequent solves
+        opts["ipopt.max_iter"] = self.max_iter
+        opti.solver("ipopt", opts)
+
+        return opti, Q, U, p_q_init
+
+    def solve(self, q_init):
+        q_init = np.asarray(q_init).reshape(self.n)
+        if q_init.shape[0] != self.n:
+            raise ValueError("q_init size mismatch with arm indices")
+
+        try:
+            self.opti.set_value(self.p_q_init, q_init)
+            sol = self.opti.solve()
+
+            if self.warm_start:
+                for k in range(self.N):
+                    self.opti.set_initial(self.Q_var[k], sol.value(self.Q_var[k + 1]))
+                for k in range(self.N - 1):
+                    self.opti.set_initial(self.U_var[k], sol.value(self.U_var[k + 1]))
+                self.opti.set_initial(self.Q_var[-1], sol.value(self.Q_var[-1]))
+                self.opti.set_initial(self.U_var[-1], sol.value(self.U_var[-1]))
+
+            u_opt = np.array(sol.value(self.U_var[0])).reshape(self.n)
+            q_next = np.array(sol.value(self.Q_var[1])).reshape(self.n)
+
+            q_traj = np.zeros((self.n, self.N + 1))
+            for k in range(self.N + 1):
+                q_traj[:, k] = np.array(sol.value(self.Q_var[k])).reshape(self.n)
+
+            return u_opt, q_next, q_traj
+
+        except Exception as e:
+            # fallback: zero commands and repeat q_init
+            u_safe = np.zeros(self.n)
+            q_traj = np.tile(q_init.reshape(-1, 1), (1, self.N + 1))
+            return u_safe, q_init, q_traj

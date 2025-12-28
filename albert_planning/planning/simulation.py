@@ -7,7 +7,7 @@ from urdfenvs.robots.generic_urdf.generic_diff_drive_robot import GenericDiffDri
 from bar_env import BarEnvironment
 import visualization
 from models import DifferentialDriveDynamics
-from planning import BaseMPC
+from mpc_planning import BaseMPC, ArmMPC
 from tqdm import tqdm
 
 class AlbertSimulation:
@@ -37,6 +37,12 @@ class AlbertSimulation:
                                 STATE_WEIGHT, INPUT_WEIGHT, 
                                 SOLVER_MAX_ITER, DO_WARM_START)
         
+        # Arm MPC controller placeholder (initialized when available)
+        self.arm_mpc = None
+        self.arm_wq = 200.0
+        self.arm_wu = 2.0
+        self.arm_max_iter = 30
+
         # PyBullet robot ID (will be set in run_albert)
         self.robot_id = None
         self.base_joint_indices = None
@@ -172,6 +178,133 @@ class AlbertSimulation:
         
         return history, x_real, u_real, x_all
 
+    def simulate_arm(self, ob, q_goal=None, max_steps=200, tol=1e-2, verbose=True):
+        """
+        Run joint-space Arm MPC to move arm joints while keeping base stationary.
+
+        Args:
+            ob: Initial observation (dict) as returned by env.reset()[0]
+            q_goal: Optional numpy array with target joint positions for arm joints
+            max_steps: Maximum number of simulation steps for arm controller
+            tol: Tolerance on joint-space L2 error to stop
+            verbose: Print progress
+
+        Returns:
+            history: list of observations during arm execution
+            q_arm_hist: (n_joints, steps) array of joint trajectories
+        """
+        if self.env is None:
+            raise RuntimeError("Environment not initialized. Call run_albert or create env first.")
+
+        total_action_dim = self.env.n()
+        robot = self.env._robots[0]
+
+        # Determine arm joint indices (exclude wheels / castors)
+        exclude = set()
+        exclude.update(getattr(robot, "_actuated_wheels", []))
+        exclude.update(getattr(robot, "_castor_wheels", []))
+        arm_idxs = [i for i, n in enumerate(robot._joint_names) if n not in exclude]
+
+        # Read current full joint positions
+        q_full = ob['robot_0']["joint_state"]["position"]
+        q_arm = np.array([q_full[i] for i in arm_idxs])
+
+        # Default goal: small offsets from current
+        if q_goal is None:
+            offsets = np.zeros(len(arm_idxs))
+            if len(offsets) >= 1:
+                offsets[0] = 0.6
+            if len(offsets) >= 2:
+                offsets[1] = -0.3
+            q_goal = q_arm + offsets
+
+        # Clip to robot limits when available
+        try:
+            q_min = np.array([robot._limit_pos_j[0, idx + 1] for idx in arm_idxs])
+            q_max = np.array([robot._limit_pos_j[1, idx + 1] for idx in arm_idxs])
+            q_goal = np.clip(q_goal, q_min, q_max)
+        except Exception:
+            pass
+
+        # Create ArmMPC if not already created
+        if self.arm_mpc is None:
+            self.arm_mpc = ArmMPC(robot, arm_idxs, self.Arm_N, self.dt, q_goal,
+                                    wq=self.arm_wq, wu=self.arm_wu,
+                                    SOLVER_MAX_ITER=self.arm_max_iter,
+                                    DO_WARM_START=True)
+            if verbose:
+                print(f"✓ ArmMPC created for {len(arm_idxs)} joints")
+        else:
+            # update target if ArmMPC exists
+            self.arm_mpc.q_target = np.asarray(q_goal).reshape(len(arm_idxs))
+
+        history = []
+        q_arm_hist = np.zeros((len(arm_idxs), max_steps + 1))
+        q_arm_hist[:, 0] = q_arm
+
+        for step in range(max_steps):
+            u_arm, q_next, _ = self.arm_mpc.solve(q_arm)
+
+            # Build full action: zeros for base, place arm velocities in appropriate indices
+            action = np.zeros(total_action_dim)
+            for i_local, flat_idx in enumerate(self.arm_mpc.arm_idxs):
+                action[flat_idx] = float(u_arm[i_local])
+
+            try:
+                ob, reward, done, truncated, info = self.env.step(action)
+            except ValueError:
+                ob, reward, done, info = self.env.step(action)
+                truncated = False
+
+            # Read new arm state
+            q_full = ob['robot_0']["joint_state"]["position"]
+            q_arm = np.array([q_full[i] for i in self.arm_mpc.arm_idxs])
+            q_arm_hist[:, step + 1] = q_arm
+            history.append(ob)
+
+            err_norm = np.linalg.norm(q_arm - self.arm_mpc.q_target)
+            if verbose and step % 10 == 0:
+                print(f"  Arm step {step}, err={err_norm:.4f}")
+            if err_norm < tol:
+                if verbose:
+                    print(f"  ✓ Arm goal reached in {step} steps (err={err_norm:.4f})")
+                q_arm_hist = q_arm_hist[:, :step + 2]
+                break
+
+        return history, q_arm_hist
+
+    def run_albert_arm(self, render=False, q_goal=None):
+        """
+        Initialize environment and run the Arm MPC test (base remains stationary).
+        """
+        robots = [
+            GenericDiffDriveRobot(
+                urdf="albert.urdf",
+                mode="vel",
+                actuated_wheels=["wheel_right_joint", "wheel_left_joint"],
+                castor_wheels=["rotacastor_right_joint", "rotacastor_left_joint"],
+                wheel_radius = 0.08,
+                wheel_distance = 0.494,
+                spawn_rotation = 0,
+                facing_direction = '-y',
+            ),
+        ]
+        env: BarEnvironment = BarEnvironment(
+            dt=self.dt, robots=robots, render=render
+        )
+
+        # Reset environment with initial configuration
+        ob = env.reset(
+            pos=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.5, 0.0, 1.8, 0.5])
+        )
+        print(f"Initial observation: {ob}")
+
+        self.env = env
+        history, q_arm_hist = self.simulate_arm(ob[0], q_goal=q_goal)
+
+        env.close()
+        return history, q_arm_hist
+
 
 def plot_results(x_real, u_real, x_target, dt, save_path='albert_mpc_results.png'):
     """
@@ -291,14 +424,15 @@ if __name__ == "__main__":
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
             Base_N=70,
+            Arm_N=50,
             T=800,  # More timesteps to reach goal
             x_init=np.array([0., 0., 0.]),
             x_target=np.array([20., -10., 2.])  # Target 
         )
         
         # Run simulation
-        history, x_real, u_real, x_all = sim.run_albert(render=True)
+        sim.run_albert_arm(render=True)
         
         # Plot comprehensive results
-        plot_results(x_real, u_real, sim.x_target, sim.dt, 
-                     save_path='albert_mpc_results.png')
+        # plot_results(x_real, u_real, sim.x_target, sim.dt, 
+        #              save_path='albert_mpc_results.png')
