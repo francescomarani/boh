@@ -284,155 +284,32 @@ class CollisionAvoidanceMPC(BaseMPC):
         return min_dist, min_obs_name
 
 
-def extract_obstacles_from_environment(env) -> List[Obstacle]:
+def obstacles_from_dict_list(obstacle_dicts: List[dict]) -> List[Obstacle]:
     """
-    Extract obstacles from a BarEnvironment for MPC collision avoidance.
+    Convert a list of obstacle dictionaries to Obstacle objects.
 
-    This function reads the obstacle dictionary from the environment and
-    converts them to Obstacle objects suitable for the MPC.
+    This is used to convert the output of BarEnvironment.get_mpc_obstacles()
+    to Obstacle objects for the MPC controller.
 
     Args:
-        env: BarEnvironment or UrdfEnv with obstacles
+        obstacle_dicts: List of dicts with keys 'name', 'type', 'position',
+                       and 'radius' (for circles) or 'size' (for boxes)
 
     Returns:
         List of Obstacle objects
     """
     obstacles = []
 
-    # Access the environment's obstacle dictionary
-    if hasattr(env, '_obsts') and env._obsts:
-        for name, obs_info in env._obsts.items():
-            try:
-                # Skip walls - they have huge bounding circles and are handled by state bounds
-                name_str = str(name)
-                if 'wall' in name_str.lower():
-                    continue
+    for obs_dict in obstacle_dicts:
+        obs_type = obs_dict.get('type', 'circle')
+        obstacle = Obstacle(
+            name=obs_dict['name'],
+            obs_type=obs_type,
+            position=np.array(obs_dict['position']),
+            radius=obs_dict.get('radius') if obs_type == 'circle' else None,
+            size=np.array(obs_dict['size']) if obs_type == 'box' else None
+        )
+        obstacles.append(obstacle)
 
-                # Get obstacle position - it's a method in mpscenes, not an attribute
-                if callable(getattr(obs_info, 'position', None)):
-                    pos = np.array(obs_info.position())
-                elif hasattr(obs_info, 'position'):
-                    pos = np.array(obs_info.position)
-                else:
-                    # Try to get from content dict
-                    pos = obs_info.content_dict.get('geometry', {}).get('position', [0, 0, 0])
-                    pos = np.array(pos)
-
-                # Determine obstacle type and size
-                obs_type = 'circle'  # Default
-                radius = 0.5  # Default radius
-                size = None
-
-                if hasattr(obs_info, 'content_dict'):
-                    content = obs_info.content_dict
-                    geom = content.get('geometry', {})
-
-                    if content.get('type') == 'cylinder':
-                        obs_type = 'circle'
-                        radius = geom.get('radius', 0.5)
-                    elif content.get('type') == 'box':
-                        obs_type = 'box'
-                        length = geom.get('length', 1.0)
-                        width = geom.get('width', 1.0)
-                        size = np.array([length, width])
-
-                obstacle = Obstacle(
-                    name=name_str,
-                    obs_type=obs_type,
-                    position=pos,
-                    radius=radius if obs_type == 'circle' else None,
-                    size=size if obs_type == 'box' else None
-                )
-                obstacles.append(obstacle)
-
-            except Exception as e:
-                print(f"Warning: Could not extract obstacle '{name}': {e}")
-
-    print(f"Extracted {len(obstacles)} obstacles from environment (walls excluded)")
-    for obs in obstacles[:10]:  # Print first 10 only
-        print(f"  - {obs}")
-    if len(obstacles) > 10:
-        print(f"  ... and {len(obstacles) - 10} more")
-
-    return obstacles
-
-
-def create_obstacles_from_bar_layout() -> List[Obstacle]:
-    """
-    Create obstacle list matching the BarEnvironment layout.
-
-    This is a fallback function that creates obstacles based on the known
-    bar environment layout, useful when obstacle extraction fails.
-
-    Note: Walls are NOT included - they have huge bounding circles that would
-    make the problem infeasible. State bounds already prevent going outside.
-
-    Returns:
-        List of Obstacle objects matching bar_env.py layout
-    """
-    obstacles = []
-
-    # Bar counter
-    obstacles.append(Obstacle(
-        name="bar_table",
-        obs_type="box",
-        position=np.array([3.0, 0.0]),
-        size=np.array([0.6, 5.0])
-    ))
-
-    # NOTE: Walls excluded - bounding circles too large, state bounds handle room limits
-
-    # Barstools
-    barstool_positions = [0.0, 1.0, -1.0, 2.0, -2.0]
-    for y in barstool_positions:
-        obstacles.append(Obstacle(
-            name=f"barstool_{y}",
-            obs_type="circle",
-            position=np.array([2.3, y]),
-            radius=0.25
-        ))
-
-    # Round tables
-    table_positions = [
-        [-2.0, 1.0],
-        [-2.0, -3.0],
-        [-2.0, 6.0],
-        [3.0, 7.0],
-        [3.0, -5.0]
-    ]
-    for i, pos in enumerate(table_positions):
-        obstacles.append(Obstacle(
-            name=f"table_{i}",
-            obs_type="circle",
-            position=np.array(pos),
-            radius=0.5
-        ))
-
-        # Chairs around each table
-        chair_offset = 0.7
-        chair_offsets = [
-            [0.0, chair_offset],
-            [0.0, -chair_offset],
-            [-chair_offset, 0.0],
-            [chair_offset, 0.0]
-        ]
-        for j, offset in enumerate(chair_offsets):
-            obstacles.append(Obstacle(
-                name=f"chair_{i}_{j}",
-                obs_type="circle",
-                position=np.array([pos[0] + offset[0], pos[1] + offset[1]]),
-                radius=0.25
-            ))
-
-    # Cabinets
-    cabinet_positions = [0.0, 1.0, -1.0]
-    for y in cabinet_positions:
-        obstacles.append(Obstacle(
-            name=f"cabinet_{y}",
-            obs_type="box",
-            position=np.array([4.65, y]),
-            size=np.array([0.6, 0.5])
-        ))
-
-    print(f"Created {len(obstacles)} obstacles from bar layout (walls excluded)")
+    print(f"Converted {len(obstacles)} obstacles for MPC")
     return obstacles
