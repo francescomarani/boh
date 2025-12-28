@@ -11,8 +11,7 @@ from mpc_planning import BaseMPC
 from collision_avoidance_mpc import (
     CollisionAvoidanceMPC,
     Obstacle,
-    extract_obstacles_from_environment,
-    create_obstacles_from_bar_layout
+    obstacles_from_dict_list
 )
 from tqdm import tqdm
 
@@ -107,9 +106,9 @@ class AlbertSimulation:
             print("COLLISION AVOIDANCE ENABLED")
             print("=" * 60)
 
-            # Use predefined bar layout (more reliable than extraction)
-            # The extracted obstacles have incorrect radii and names
-            obstacle_list = create_obstacles_from_bar_layout()
+            # Get obstacles from environment (single source of truth)
+            obstacle_dicts = env.get_mpc_obstacles()
+            obstacle_list = obstacles_from_dict_list(obstacle_dicts)
 
             # Create collision-aware MPC
             self.base_mpc = CollisionAvoidanceMPC(

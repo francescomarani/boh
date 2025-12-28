@@ -519,13 +519,81 @@ class BarEnvironment(UrdfEnv):
     def get_furniture_count(self) -> dict:
         """
         Get count of furniture items in the scene.
-        
+
         Returns
         -------
         dict
             Dictionary with counts for each furniture category
         """
         return {
-            category: len(body_ids) 
+            category: len(body_ids)
             for category, body_ids in self.furniture_bodies.items()
         }
+
+    def get_mpc_obstacles(self) -> List[dict]:
+        """
+        Get obstacles in format suitable for MPC collision avoidance.
+
+        This method extracts obstacle information from the environment's
+        internal obstacle dictionary and returns it in a simple format
+        that can be used by the MPC controller.
+
+        Returns
+        -------
+        List[dict]
+            List of obstacle dictionaries with keys:
+            - 'name': obstacle identifier
+            - 'type': 'circle' or 'box'
+            - 'position': [x, y] center position
+            - 'radius': radius for circle obstacles
+            - 'size': [length, width] for box obstacles
+        """
+        obstacles = []
+
+        if not hasattr(self, '_obsts') or not self._obsts:
+            return obstacles
+
+        for name, obs_info in self._obsts.items():
+            try:
+                name_str = str(name)
+
+                # Skip walls - they have huge bounding circles
+                # State bounds already prevent going outside the room
+                if 'wall' in name_str.lower():
+                    continue
+
+                # Get position from obstacle (it's a method in mpscenes)
+                if callable(getattr(obs_info, 'position', None)):
+                    pos = obs_info.position()
+                else:
+                    continue
+
+                # Get obstacle info from content_dict
+                if not hasattr(obs_info, 'content_dict'):
+                    continue
+
+                content = obs_info.content_dict
+                geom = content.get('geometry', {})
+                obs_type = content.get('type', 'box')
+
+                obstacle_info = {
+                    'name': name_str,
+                    'position': [float(pos[0]), float(pos[1])],
+                }
+
+                if obs_type == 'cylinder':
+                    obstacle_info['type'] = 'circle'
+                    obstacle_info['radius'] = geom.get('radius', 0.5)
+                else:  # box
+                    obstacle_info['type'] = 'box'
+                    obstacle_info['size'] = [
+                        geom.get('length', 1.0),
+                        geom.get('width', 1.0)
+                    ]
+
+                obstacles.append(obstacle_info)
+
+            except Exception as e:
+                print(f"Warning: Could not extract obstacle '{name}': {e}")
+
+        return obstacles
