@@ -5,7 +5,7 @@ from typing import List, Optional
 from urdfenvs.urdf_common.generic_robot import GenericRobot
 from urdfenvs.urdf_common.urdf_env import UrdfEnv
 from mpscenes.obstacles.box_obstacle import BoxObstacle
-
+from mpscenes.obstacles.urdf_obstacle import UrdfObstacle
 
 class BarEnvironment(UrdfEnv):
     """
@@ -35,12 +35,13 @@ class BarEnvironment(UrdfEnv):
         num_sub_steps: int = 20,
         observation_checking: bool = True,
         # Bar-specific parameters
+        floor_urdf: str = "urdfenvs/floor/floor.urdf",
         bar_cabinet_urdf: str = "urdfenvs/bar_cabinet/bar_cabinet.urdf",
         barstool_urdf: str = "urdfenvs/barstool/barstool.urdf",
         chair_urdf_prefix: str = "urdfenvs/chair/chair_table",
         table_urdf_prefix: str = "urdfenvs/round_table/round_table",
         auto_setup_scene: bool = True,
-        furniture_as_obstacles: bool = False  # NEW: Add furniture as MPC obstacles
+        furniture_as_obstacles: bool = False  # Add furniture as MPC obstacles
     ) -> None:
         """
         Initialize Bar Environment.
@@ -82,6 +83,7 @@ class BarEnvironment(UrdfEnv):
         
         # Store URDF paths
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.floor_urdf = os.path.join(base_dir, floor_urdf)    
         self.bar_cabinet_urdf = os.path.join(base_dir, bar_cabinet_urdf)
         self.barstool_urdf = os.path.join(base_dir, barstool_urdf)
         self.chair_urdf_prefix = os.path.join(base_dir, chair_urdf_prefix)
@@ -94,6 +96,7 @@ class BarEnvironment(UrdfEnv):
         
         # Track furniture body IDs for potential removal/reset
         self.furniture_bodies = {
+            'floor': [],
             'barstools': [],
             'cabinets': [],
             'tables': [],
@@ -114,6 +117,7 @@ class BarEnvironment(UrdfEnv):
         print("Setting up Bar Environment...")
         print("=" * 50)
         
+        self._load_floor()
         self._add_walls_and_bar()
         
         # Add furniture as obstacles if requested (for MPC)
@@ -127,6 +131,21 @@ class BarEnvironment(UrdfEnv):
         print("Bar Environment setup complete!")
         print("=" * 50)
     
+    def _load_floor(self) -> None:
+        """Load the floor URDF into the environment."""
+        try:
+            floor_id = p.loadURDF(
+                self.floor_urdf, 
+                [0, 0, 0], 
+                p.getQuaternionFromEuler([0, 0, 0]), 
+                useFixedBase=True
+            )
+            self.furniture_bodies['floor'].append(floor_id)
+            print("✓ Loaded floor")
+        except Exception as e:
+            print(f"✗ Error loading floor: {e}")
+
+            
     def _add_walls_and_bar(self) -> None:
         """
         Add walls and bar counter as tracked obstacles using mpscenes BoxObstacle.

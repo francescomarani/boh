@@ -31,13 +31,13 @@ def parse_arguments():
     parser.add_argument(
         '--dt',
         type=float,
-        default=0.01,
+        default=0.05,
         help='Simulation time step (default: 0.01)'
     )
     parser.add_argument(
         '--max-steps',
         type=int,
-        default=1000,
+        default=800,
         help='Maximum simulation steps (default: 1000)'
     )
     parser.add_argument(
@@ -50,13 +50,13 @@ def parse_arguments():
     parser.add_argument(
         '--initial-x',
         type=float,
-        default=-3.0,
+        default=0.0,
         help='Initial X position (default: -3.0)'
     )
     parser.add_argument(
         '--initial-y',
         type=float,
-        default=-2.0,
+        default=0.0,
         help='Initial Y position (default: -2.0)'
     )
     parser.add_argument(
@@ -68,19 +68,19 @@ def parse_arguments():
     parser.add_argument(
         '--target-x',
         type=float,
-        default=0.0,
+        default=10.0,
         help='Target X position (default: 0.0)'
     )
     parser.add_argument(
         '--target-y',
         type=float,
-        default=0.0,
+        default=4.0,
         help='Target Y position (default: 0.0)'
     )
     parser.add_argument(
         '--target-theta',
         type=float,
-        default=0.0,
+        default=2.0,
         help='Target orientation in radians (default: 0.0)'
     )
     
@@ -88,13 +88,13 @@ def parse_arguments():
     parser.add_argument(
         '--mpc-horizon',
         type=int,
-        default=20,
+        default=70,
         help='MPC prediction horizon (default: 20)'
     )
     parser.add_argument(
         '--mpc-wx',
         type=float,
-        default=10.0,
+        default=100.0,
         help='MPC state tracking weight (default: 10.0)'
     )
     parser.add_argument(
@@ -106,7 +106,7 @@ def parse_arguments():
     parser.add_argument(
         '--max-iter',
         type=int,
-        default=10,
+        default=30,
         help='Maximum MPC solver iterations (default: 10)'
     )
     parser.add_argument(
@@ -198,21 +198,26 @@ def main():
         return 1
     
     # Run simulation
-    try:
-        history = sim.run(
-            max_steps=args.max_steps,
-            tolerance=args.tolerance,
-            verbose=not args.quiet
-        )
-    except KeyboardInterrupt:
-        print("\n\n✗ Simulation interrupted by user")
-        sim.close()
-        return 1
-    except Exception as e:
-        print(f"\n✗ Simulation failed: {e}")
-        sim.close()
-        return 1
+    # try:
+    #     history = sim.run(
+    #         max_steps=args.max_steps,
+    #         tolerance=args.tolerance,
+    #         verbose=not args.quiet
+    #     )
+    # except KeyboardInterrupt:
+    #     print("\n\n✗ Simulation interrupted by user")
+    #     sim.close()
+    #     return 1
+    # except Exception as e:
+    #     print(f"\n✗ Simulation failed: {e}")
+    #     sim.close()
+    #     return 1
     
+    history = sim.run(
+        max_steps=args.max_steps,
+        tolerance=args.tolerance,
+        verbose=not args.quiet
+    )
     # Close simulation
     sim.close()
     

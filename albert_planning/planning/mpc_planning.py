@@ -223,6 +223,19 @@ class BaseMPC:
             
             return u_opt, x_next, x_traj, x_next[2]
         
+        except RuntimeError as e:
+            # Check if it's max iterations exceeded
+            if "Maximum_Iterations_Exceeded" in str(e):
+                print(f"⚠ MPC solver hit max iterations - using safe fallback")
+                print(f"  Current state: [{x_init[0]:.2f}, {x_init[1]:.2f}, {x_init[2]:.2f}]")
+                print(f"  Target: [{self.x_target[0]:.2f}, {self.x_target[1]:.2f}]")
+                print(f"  Distance to target: {np.linalg.norm(x_init[:2] - self.x_target[:2]):.2f} m")
+                print(f"  Consider: increasing max_iter, reducing horizon, or checking if target is reachable")
+            else:
+                print(f"✗ MPC solver failed: {e}")
+            
+            return self._safe_fallback(x_init)
+        
         except Exception as e:
             print(f"✗ MPC solver failed: {e}")
             return self._safe_fallback(x_init)
@@ -274,17 +287,16 @@ class BaseMPC:
         # Zero input (stop the robot)
         u_safe = np.zeros(2)
         
-        # Maintain current state
+        # Ensure x_init has correct dimension (3)
+        if len(x_init) < 3:
+            x_init = np.concatenate([x_init, np.zeros(3 - len(x_init))])
+        elif len(x_init) > 3:
+            x_init = x_init[:3]
+        
+        # Maintain current state in trajectory
         x_traj = np.tile(x_init.reshape(-1, 1), (1, self.N + 1))
         
-        # Ensure correct state dimension
-        if len(x_init) == 3:
-            return u_safe, x_init, x_traj, x_init[2]
-        else:
-            # Emergency fallback with zeros
-            x_init_safe = np.zeros(3)
-            x_traj_safe = np.zeros((3, self.N + 1))
-            return u_safe, x_init_safe, x_traj_safe, 0.0
+        return u_safe, x_init.copy(), x_traj, x_init[2]
     
     def update_target(self, x_target: np.ndarray):
         """

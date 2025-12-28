@@ -123,6 +123,10 @@ class AlbertSimulation:
         }
         
         print("✓ Albert simulation initialized successfully!")
+        
+        # Print environment action dimension
+        self.total_action_dim = self.env.n()
+        print(f"Environment action dimension: {self.total_action_dim}")
     
     def reset(self) -> np.ndarray:
         """
@@ -214,7 +218,9 @@ class AlbertSimulation:
             self.history['predicted_trajectories'].append(x_traj.copy())
             
             # Apply control to environment
-            action = self._state_to_action(u_opt)
+            action = np.zeros(self.total_action_dim)
+            action[0] = u_opt[0]  # Linear velocity
+            action[1] = u_opt[1]  # Angular velocity
             obs, reward, terminated, truncated, info = self.env.step(action)
             
             # Check for termination
@@ -231,6 +237,18 @@ class AlbertSimulation:
             if verbose and step % 100 == 0:
                 print(f"Step {step:4d} | Distance: {distance_to_target:.3f} m | "
                       f"Pos: [{current_state[0]:.2f}, {current_state[1]:.2f}]")
+                # DEBUG: Stampa ogni 10 steps
+            if step % 10 == 0:
+                print(f"\n🔍 DEBUG Step {step}:")
+                print(f"  Current state: {current_state}")
+                print(f"  MPC input u_opt: {u_opt}")
+                print(f"  Action sent to env: {action}")
+                print(f"  Observation keys: {list(obs.keys())}")
+                if 'robot_0' in obs:
+                    print(f"  Robot obs keys: {list(obs['robot_0'].keys())}")
+                    if 'joint_state' in obs['robot_0']:
+                        print(f"  Joint positions: {obs['robot_0']['joint_state']['position']}")
+                        print(f"  Joint velocities: {obs['robot_0']['joint_state']['velocity']}")
         
         # Final statistics
         if verbose:
@@ -271,24 +289,6 @@ class AlbertSimulation:
             theta = 0.0
         
         return np.array([position[0], position[1], theta])
-    
-    def _state_to_action(self, u: np.ndarray) -> np.ndarray:
-        """
-        Convert MPC control [v, omega] to robot action.
-        
-        Parameters
-        ----------
-        u : np.ndarray
-            Control input [v, omega]
-        
-        Returns
-        -------
-        np.ndarray
-            Robot action vector
-        """
-        # For differential drive: action is typically [v, omega]
-        # Adjust based on your robot's action space
-        return u
     
     def get_history(self) -> dict:
         """
