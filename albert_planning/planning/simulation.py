@@ -14,6 +14,7 @@ from collision_avoidance_mpc import (
     obstacles_from_dict_list
 )
 from path_planner import ConfigurationSpacePlanner
+from discrete_controller import DiscreteController, DiscreteControllerWithAvoidance
 from tqdm import tqdm
 
 class AlbertSimulation:
@@ -24,6 +25,8 @@ class AlbertSimulation:
                  waypoints=None,  # List of intermediate waypoints [[x1,y1], [x2,y2], ...]
                  waypoint_threshold=0.5,  # Distance to switch to next waypoint
                  use_astar_planning=False,  # Use A* to generate waypoints automatically
+                 # Controller type
+                 use_discrete_controller=False,  # Use simple rotate-then-translate controller
                  # Collision avoidance parameters
                  enable_collision_avoidance=True,
                  robot_radius=0.35,
@@ -50,6 +53,9 @@ class AlbertSimulation:
         self.waypoint_threshold = waypoint_threshold
         self.current_waypoint_idx = 0
         self.use_astar_planning = use_astar_planning
+
+        # Controller type
+        self.use_discrete_controller = use_discrete_controller
 
         # Collision avoidance parameters
         self.enable_collision_avoidance = enable_collision_avoidance
@@ -165,21 +171,35 @@ class AlbertSimulation:
                 print(f"  Final target: [{self.x_target[0]:.2f}, {self.x_target[1]:.2f}]")
                 print(f"  Starting with waypoint 0: [{wp[0]:.2f}, {wp[1]:.2f}]")
 
-            self.base_mpc = CollisionAvoidanceMPC(
-                dynamics=self.base_model,
-                N=self.Base_N,
-                x_target=initial_target,
-                wx=STATE_WEIGHT,
-                wu=INPUT_WEIGHT,
-                obstacles=obstacle_list,
-                robot_radius=self.robot_radius,
-                safety_margin=self.safety_margin,
-                use_soft_constraints=self.use_soft_constraints,
-                soft_constraint_weight=self.soft_constraint_weight,
-                constraint_every_n_steps=1,  # Check every step for safety
-                SOLVER_MAX_ITER=SOLVER_MAX_ITER,
-                DO_WARM_START=DO_WARM_START
-            )
+            if self.use_discrete_controller:
+                # Use simple discrete controller (rotate-then-translate)
+                print("Using DISCRETE controller (rotate-then-translate)")
+                self.base_mpc = DiscreteControllerWithAvoidance(
+                    v_max=0.5,
+                    omega_max=1.0,
+                    heading_threshold=0.15,  # ~8.5 degrees
+                    obstacles=obstacle_dicts,
+                    robot_radius=self.robot_radius,
+                    safety_margin=self.safety_margin
+                )
+                self.base_mpc.max_iter = 1  # For compatibility
+                self.base_mpc.update_target(initial_target)
+            else:
+                self.base_mpc = CollisionAvoidanceMPC(
+                    dynamics=self.base_model,
+                    N=self.Base_N,
+                    x_target=initial_target,
+                    wx=STATE_WEIGHT,
+                    wu=INPUT_WEIGHT,
+                    obstacles=obstacle_list,
+                    robot_radius=self.robot_radius,
+                    safety_margin=self.safety_margin,
+                    use_soft_constraints=self.use_soft_constraints,
+                    soft_constraint_weight=self.soft_constraint_weight,
+                    constraint_every_n_steps=1,  # Check every step for safety
+                    SOLVER_MAX_ITER=SOLVER_MAX_ITER,
+                    DO_WARM_START=DO_WARM_START
+                )
             self.obstacles = obstacle_list
         else:
             print("\n" + "=" * 60)
@@ -224,18 +244,21 @@ class AlbertSimulation:
         print(f"\nStarting MPC simulation:")
         print(f"  Initial state: x={x_real[0,0]:.3f}, y={x_real[1,0]:.3f}, θ={x_real[2,0]:.3f}")
         print(f"  Target state:  x={self.x_target[0]:.3f}, y={self.x_target[1]:.3f}, θ={self.x_target[2]:.3f}")
-        print(f"  Horizon: {self.Base_N}, Max iterations: {self.base_mpc.max_iter}\n")
-        
+        if self.use_discrete_controller:
+            print(f"  Controller: DISCRETE (rotate-then-translate)\n")
+        else:
+            print(f"  Horizon: {self.Base_N}, Max iterations: {self.base_mpc.max_iter}\n")
+
         theta_all = np.zeros((T))
         history = []
-        
+
         for t in tqdm(range(0, T), desc='Simulating'):
             # Current state
             x_current = x_real[:, t]
-            
-            # Solve MPC to get optimal control for BASE ONLY
+
+            # Get control action (MPC or discrete controller)
             u_base, x_pred, x_all_out, theta_out = self.base_mpc.solve(x_current)
-            
+
             # Create full action vector: base control + zero arm control
             # u_base is [v, omega] with shape (2,)
             # Full action is [v, omega, arm_joint1, arm_joint2, ..., gripper1, gripper2]
@@ -243,7 +266,7 @@ class AlbertSimulation:
             action[0] = u_base[0]  # Linear velocity
             action[1] = u_base[1]  # Angular velocity
             # action[2:] remain zero (arm and gripper don't move)
-            
+
             # Apply control to REAL robot in PyBullet
             try:
                 ob, reward, done, truncated, info = self.env.step(action)
@@ -251,14 +274,16 @@ class AlbertSimulation:
                 # If step() returns only 4 values instead of 5
                 ob, reward, done, info = self.env.step(action)
                 truncated = False
-            
+
             # Extract REAL state using PyBullet API (not MPC prediction!)
             x_real[:, t+1] = ob['robot_0']["joint_state"]["position"][0:3]
 
             # Save for visualization (only base control)
-            x_all[:, :, t] = x_all_out
+            if x_all_out is not None:
+                x_all[:, :, t] = x_all_out
             u_real[:, t] = u_base  # Save only base control
-            theta_all[t] = theta_out
+            if theta_out is not None:
+                theta_all[t] = theta_out
             history.append(ob)
 
             # ===== WAYPOINT NAVIGATION =====
@@ -464,22 +489,24 @@ if __name__ == "__main__":
         # which is too tight for reliable navigation with 0.5m clearance
         x_target = np.array([3.5, 3.5, 0.])  # End of bar area - accessible target
 
-        # Create simulation with A* path planning + MPC tracking
+        # Create simulation with A* path planning + discrete controller
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
-            Base_N=30,  # Shorter horizon (A* handles global planning)
+            Base_N=30,  # Not used with discrete controller
             T=800,  # Max timesteps
             x_init=np.array([0., 0., 0.]),
             x_target=x_target,
             # A* path planning - generates waypoints automatically!
             use_astar_planning=True,
-            waypoint_threshold=1.0,  # Switch waypoint when within 1.0m (allows smoother path following)
+            waypoint_threshold=0.5,  # Tighter threshold works well with discrete controller
+            # Use discrete controller (rotate-then-translate)
+            use_discrete_controller=True,  # Simple 3-action controller!
             # Collision avoidance parameters
             enable_collision_avoidance=True,
             robot_radius=0.35,
             safety_margin=0.15,
-            use_soft_constraints=True,  # Keep soft constraints for local refinement
-            soft_constraint_weight=50.0  # Lower weight since A* handles global path
+            use_soft_constraints=True,  # Not used with discrete controller
+            soft_constraint_weight=50.0  # Not used with discrete controller
         )
 
         # Run simulation
