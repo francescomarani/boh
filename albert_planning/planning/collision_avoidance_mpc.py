@@ -184,24 +184,24 @@ class CollisionAvoidanceMPC(BaseMPC):
                         dx = robot_pos[0] - obs_pos[0]
                         dy = robot_pos[1] - obs_pos[1]
                         dist_squared = dx**2 + dy**2
+                        dist = cs.sqrt(dist_squared + 1e-6)  # Smooth sqrt
                         min_dist = obs.radius + total_clearance
-                        min_dist_squared = min_dist**2
 
                         # HYBRID: Always add hard constraint with reduced clearance
-                        hard_clearance = obs.radius + self.robot_radius + 0.05  # Small margin
+                        hard_clearance = obs.radius + self.robot_radius + 0.05
                         opti.subject_to(dist_squared >= hard_clearance**2)
 
                         if self.use_soft_constraints:
-                            # Also add soft penalty for smoother avoidance
-                            epsilon = 0.01
-                            penalty = self.soft_constraint_weight / (
-                                dist_squared - min_dist_squared + epsilon
+                            # Exponential penalty: strong when close, decays with distance
+                            # penalty = weight * exp(-decay * (dist - min_dist))
+                            decay_rate = 3.0  # How fast penalty decays
+                            penalty = self.soft_constraint_weight * cs.exp(
+                                -decay_rate * (dist - min_dist)
                             )
-                            cost += cs.fmax(penalty, 0)
+                            cost += penalty
 
                     else:  # Box obstacle
                         # Proper signed distance to axis-aligned box
-                        # Box half-sizes
                         half_x = obs.size[0] / 2.0
                         half_y = obs.size[1] / 2.0
 
@@ -209,22 +209,23 @@ class CollisionAvoidanceMPC(BaseMPC):
                         dx = cs.fabs(robot_pos[0] - obs_pos[0]) - half_x
                         dy = cs.fabs(robot_pos[1] - obs_pos[1]) - half_y
 
-                        # Signed distance to box (positive outside, negative inside)
+                        # Signed distance to box
                         dist_outside_sq = cs.fmax(dx, 0)**2 + cs.fmax(dy, 0)**2
+                        dist_outside = cs.sqrt(dist_outside_sq + 1e-6)
+                        dist_inside = cs.fmin(cs.fmax(dx, dy), 0)
+                        signed_dist = dist_outside + dist_inside
 
                         # HYBRID: Always add hard constraint with reduced clearance
-                        hard_clearance = self.robot_radius + 0.05  # Small margin
+                        hard_clearance = self.robot_radius + 0.05
                         opti.subject_to(dist_outside_sq >= hard_clearance**2)
 
                         if self.use_soft_constraints:
-                            # Also add soft penalty for smoother avoidance
-                            dist_inside = cs.fmin(cs.fmax(dx, dy), 0)
-                            signed_dist_sq = dist_outside_sq + dist_inside**2
-                            epsilon = 0.01
-                            penalty = self.soft_constraint_weight / (
-                                signed_dist_sq - total_clearance**2 + epsilon
+                            # Exponential penalty for boxes
+                            decay_rate = 3.0
+                            penalty = self.soft_constraint_weight * cs.exp(
+                                -decay_rate * (signed_dist - total_clearance)
                             )
-                            cost += cs.fmax(penalty, 0)
+                            cost += penalty
 
         # Minimize cost
         opti.minimize(cost)

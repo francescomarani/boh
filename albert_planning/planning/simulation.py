@@ -404,8 +404,8 @@ if __name__ == "__main__":
             enable_collision_avoidance=True,  # Set to False to disable
             robot_radius=0.35,  # Albert robot radius (approximate)
             safety_margin=0.15,  # Safety margin
-            use_soft_constraints=True,  # Soft constraints - never infeasible, allows recovery
-            soft_constraint_weight=500.0  # High weight for strong obstacle repulsion
+            use_soft_constraints=True,  # Soft constraints with exponential decay
+            soft_constraint_weight=50.0  # Weight for exponential penalty (decays with distance)
         )
 
         # Run simulation
