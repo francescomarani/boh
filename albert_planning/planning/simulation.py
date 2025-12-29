@@ -482,12 +482,12 @@ if __name__ == "__main__":
         # Set enable_collision_avoidance=True to enable obstacle avoidance
         # Set enable_collision_avoidance=False for standard MPC (no obstacles)
 
-        # Target: navigate to the end of the bar (outside the tight corridor)
-        # Bar is at [3.0, 0.0] with size [0.6, 5.0] - extends from y=-2.5 to y=2.5
-        # y=3.5 is beyond the bar's end - much easier to reach!
-        # The corridor between bar (x=3.3) and cabinets (x=4.35) is only 1.05m wide
-        # which is too tight for reliable navigation with 0.5m clearance
-        x_target = np.array([3.5, 3.5, 0.])  # End of bar area - accessible target
+        # Target: navigate BEHIND the bar counter (tight corridor challenge!)
+        # Bar is at [3.0, 0.0] with size [0.6, 5.0] - right edge at x=3.3
+        # Cabinets are at x=4.65 - left edge at x=4.35
+        # Corridor is only 1.05m wide - very challenging!
+        # The discrete controller should handle this better than MPC
+        x_target = np.array([3.8, 0.0, 0.])  # Behind the bar - tight corridor!
 
         # Create simulation with A* path planning + discrete controller
         sim = AlbertSimulation(
