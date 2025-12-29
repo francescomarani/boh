@@ -84,7 +84,7 @@ class CollisionAvoidanceMPC(BaseMPC):
                  SOLVER_MAX_ITER: int = 10,
                  DO_WARM_START: bool = True):
 
-        # Store collision avoidance parameters before calling parent __init__
+        # Store collision avoidance parameters before creating optimization problem
         self.obstacles = obstacles if obstacles is not None else []
         self.robot_radius = robot_radius
         self.safety_margin = safety_margin
@@ -92,8 +92,18 @@ class CollisionAvoidanceMPC(BaseMPC):
         self.soft_constraint_weight = soft_constraint_weight
         self.constraint_every_n_steps = constraint_every_n_steps
 
-        # Call parent constructor (this creates the optimization problem)
-        super().__init__(dynamics, N, x_target, wx, wu, SOLVER_MAX_ITER, DO_WARM_START)
+        # Initialize parent attributes manually (don't call super().__init__ as it
+        # expects 4 return values from _create_optimization_problem, but we return 5)
+        self.dynamics = dynamics
+        self.N = N
+        self.x_target = x_target
+        self.wx = wx
+        self.wu = wu
+        self.max_iter = SOLVER_MAX_ITER
+        self.warm_start = DO_WARM_START
+
+        # Create optimization problem (returns 5 values including p_x_target)
+        self.opti, self.X_var, self.U_var, self.p_x_init, self.p_x_target = self._create_optimization_problem()
 
         print(f"\nCollision Avoidance MPC initialized:")
         print(f"  Robot radius: {robot_radius}m")
@@ -134,12 +144,15 @@ class CollisionAvoidanceMPC(BaseMPC):
         p_x_init = opti.parameter(nx)
         opti.subject_to(X[0] == p_x_init)
 
+        # Parameter for target (allows dynamic waypoint updates)
+        p_x_target = opti.parameter(2)  # Only [x, y] for position tracking
+
         # Add cost function and dynamics constraints
         cost = 0
 
         for k in range(N):
             # Tracking cost (only position [x, y])
-            pos_error = X[k][:2] - self.x_target[:2]
+            pos_error = X[k][:2] - p_x_target
             cost += self.wx * pos_error.T @ pos_error
 
             # Input cost
@@ -159,7 +172,7 @@ class CollisionAvoidanceMPC(BaseMPC):
             ))
 
         # Terminal cost
-        terminal_pos_error = X[-1][:2] - self.x_target[:2]
+        terminal_pos_error = X[-1][:2] - p_x_target
         cost += 10.0 * terminal_pos_error.T @ terminal_pos_error
 
         # =====================================================================
@@ -247,6 +260,7 @@ class CollisionAvoidanceMPC(BaseMPC):
         # Solve the problem to convergence the first time
         print("Solving initial collision avoidance MPC problem...")
         opti.set_value(p_x_init, np.zeros(nx))
+        opti.set_value(p_x_target, self.x_target[:2])  # Set initial target
 
         # Set good initial guess to help convergence with obstacles
         for k in range(N + 1):
@@ -267,7 +281,7 @@ class CollisionAvoidanceMPC(BaseMPC):
         opts["ipopt.max_iter"] = max(self.max_iter, 200)
         opti.solver("ipopt", opts)
 
-        return opti, X, U, p_x_init
+        return opti, X, U, p_x_init, p_x_target
 
     def update_obstacles(self, obstacles: List[Obstacle]) -> None:
         """
@@ -279,8 +293,71 @@ class CollisionAvoidanceMPC(BaseMPC):
             obstacles: New list of Obstacle objects
         """
         self.obstacles = obstacles
-        self.opti, self.X_var, self.U_var, self.p_x_init = self._create_optimization_problem()
+        self.opti, self.X_var, self.U_var, self.p_x_init, self.p_x_target = self._create_optimization_problem()
         print(f"Updated MPC with {len(obstacles)} obstacles")
+
+    def update_target(self, new_target: np.ndarray) -> None:
+        """
+        Update the target position for waypoint following.
+
+        This allows changing the MPC target without recreating the optimization
+        problem, enabling efficient waypoint navigation.
+
+        Args:
+            new_target: New target position [x, y] or [x, y, theta]
+        """
+        self.x_target = new_target
+        print(f"  → Waypoint updated to: [{new_target[0]:.2f}, {new_target[1]:.2f}]")
+
+    def solve(self, x_init: np.ndarray):
+        """
+        Solve MPC problem for current state with dynamic target.
+
+        Overrides parent method to set the target parameter before solving.
+
+        Args:
+            x_init: current state [x, y, theta]
+
+        Returns:
+            u_opt: optimal control [v, omega]
+            x_next: predicted next state
+            x_traj: predicted trajectory
+            theta_next: next orientation
+        """
+        # Set target parameter before solving
+        self.opti.set_value(self.p_x_target, self.x_target[:2])
+
+        # Set initial condition parameter
+        self.opti.set_value(self.p_x_init, x_init)
+
+        try:
+            sol = self.opti.solve()
+
+            # Warm start for next iteration
+            if self.warm_start:
+                for k in range(self.N):
+                    self.opti.set_initial(self.X_var[k], sol.value(self.X_var[k + 1]))
+                for k in range(self.N - 1):
+                    self.opti.set_initial(self.U_var[k], sol.value(self.U_var[k + 1]))
+                self.opti.set_initial(self.X_var[-1], sol.value(self.X_var[-1]))
+                self.opti.set_initial(self.U_var[-1], sol.value(self.U_var[-1]))
+
+            # Extract solution
+            u_opt = sol.value(self.U_var[0])
+            x_next = sol.value(self.X_var[1])
+
+            # Extract full trajectory
+            x_traj = np.zeros((3, self.N + 1))
+            for k in range(self.N + 1):
+                x_traj[:, k] = sol.value(self.X_var[k])
+
+            return u_opt, x_next, x_traj, x_next[2]
+
+        except Exception as e:
+            print(f"MPC solver failed: {e}")
+            u_safe = np.zeros(2)
+            x_traj = np.tile(x_init.reshape(-1, 1), (1, self.N + 1))
+            return u_safe, x_init, x_traj, x_init[2]
 
     def get_min_obstacle_distance(self, x: np.ndarray) -> Tuple[float, str]:
         """
