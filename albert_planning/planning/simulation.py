@@ -127,10 +127,12 @@ class AlbertSimulation:
                 print("A* PATH PLANNING IN CONFIGURATION SPACE")
                 print("-" * 40)
 
+                # Use smaller clearance for A* planning (robot_radius only)
+                # MPC will handle the full safety_margin via soft constraints
                 planner = ConfigurationSpacePlanner(
                     obstacles=obstacle_dicts,
                     robot_radius=self.robot_radius,
-                    safety_margin=self.safety_margin
+                    safety_margin=0.05  # Smaller margin for A* to find paths in tight spaces
                 )
 
                 start = (self.x_init[0], self.x_init[1])
