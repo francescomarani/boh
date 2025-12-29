@@ -192,9 +192,10 @@ class CollisionAvoidanceMPC(BaseMPC):
                         opti.subject_to(dist_squared >= hard_clearance**2)
 
                         if self.use_soft_constraints:
-                            # Exponential penalty: strong when close, decays with distance
-                            # penalty = weight * exp(-decay * (dist - min_dist))
-                            decay_rate = 3.0  # How fast penalty decays
+                            # Exponential penalty: gives "vision" of obstacles
+                            # Fast decay (5.0) = only affects nearby obstacles
+                            # Low weight = avoids strong local minima
+                            decay_rate = 5.0  # Fast decay - only nearby obstacles matter
                             penalty = self.soft_constraint_weight * cs.exp(
                                 -decay_rate * (dist - min_dist)
                             )
@@ -221,7 +222,8 @@ class CollisionAvoidanceMPC(BaseMPC):
 
                         if self.use_soft_constraints:
                             # Exponential penalty for boxes
-                            decay_rate = 3.0
+                            # Fast decay = only nearby obstacles matter
+                            decay_rate = 5.0
                             penalty = self.soft_constraint_weight * cs.exp(
                                 -decay_rate * (signed_dist - total_clearance)
                             )
