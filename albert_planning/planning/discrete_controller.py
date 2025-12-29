@@ -164,32 +164,63 @@ class DiscreteControllerWithAvoidance(DiscreteController):
     When an obstacle is too close, the robot will:
     1. Stop forward motion
     2. Rotate away from the obstacle
+    3. Use hysteresis to prevent oscillation
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.avoidance_distance = self.min_clearance + 0.2  # Start avoiding at this distance
+        self.avoidance_distance = self.min_clearance + 0.3  # Start avoiding at this distance
+        self.clear_distance = self.min_clearance + 0.5  # Must be this far to exit avoidance
+
+        # State for hysteresis
+        self.avoiding = False
+        self.avoidance_direction = 0  # +1 = rotating left, -1 = rotating right
+        self.avoidance_steps = 0
+        self.min_avoidance_steps = 10  # Minimum steps to commit to avoidance
 
     def solve(self, x: np.ndarray) -> Tuple[np.ndarray, None, None, None]:
-        """Get control with obstacle avoidance."""
+        """Get control with obstacle avoidance and hysteresis."""
         # Check nearest obstacle
         min_dist, obs_name = self.get_min_obstacle_distance(x)
 
-        # If too close to obstacle, enter avoidance mode
+        # Check if we should exit avoidance mode
+        if self.avoiding:
+            self.avoidance_steps += 1
+
+            # Only exit if we've done minimum steps AND we're far enough from obstacles
+            if self.avoidance_steps >= self.min_avoidance_steps and min_dist > self.clear_distance:
+                self.avoiding = False
+                self.avoidance_direction = 0
+                self.avoidance_steps = 0
+            else:
+                # Continue avoidance in committed direction
+                return np.array([0.0, self.avoidance_direction * self.omega_max]), None, None, None
+
+        # Check if we should enter avoidance mode
         if min_dist < self.avoidance_distance:
-            # Find which side the obstacle is on
-            obstacle_angle = self._get_obstacle_direction(x, obs_name)
+            # Check if forward path is blocked
+            if not self.check_forward_clear(x, look_ahead=0.4):
+                # Enter avoidance mode
+                self.avoiding = True
+                self.avoidance_steps = 0
 
-            if obstacle_angle is not None:
-                # Rotate away from obstacle
-                if obstacle_angle > 0:
-                    # Obstacle on left, rotate right
-                    return np.array([0.0, -self.omega_max]), None, None, None
+                # Decide direction: rotate towards target if possible, otherwise away from obstacle
+                heading_error = self.get_heading_error(x)
+                obstacle_angle = self._get_obstacle_direction(x, obs_name)
+
+                if obstacle_angle is not None:
+                    # Rotate away from obstacle
+                    if obstacle_angle > 0:
+                        self.avoidance_direction = -1  # Obstacle on left, rotate right
+                    else:
+                        self.avoidance_direction = 1   # Obstacle on right, rotate left
                 else:
-                    # Obstacle on right, rotate left
-                    return np.array([0.0, self.omega_max]), None, None, None
+                    # No clear obstacle direction, rotate towards target
+                    self.avoidance_direction = 1 if heading_error > 0 else -1
 
-        # Normal behavior
+                return np.array([0.0, self.avoidance_direction * self.omega_max]), None, None, None
+
+        # Normal behavior - rotate then translate
         return super().solve(x)
 
     def _get_obstacle_direction(self, x: np.ndarray, obs_name: str) -> Optional[float]:
