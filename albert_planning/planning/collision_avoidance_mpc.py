@@ -170,7 +170,8 @@ class CollisionAvoidanceMPC(BaseMPC):
             heading_error_wrapped = cs.atan2(cs.sin(heading_error), cs.cos(heading_error))
 
             # Reduce heading weight when very close to target (avoid singularity at target)
-            heading_weight = 5.0 * cs.fmin(cs.sqrt(dist_to_target_sq), 1.0)
+            # Lower weight (2.0 instead of 5.0) to let position tracking dominate
+            heading_weight = 2.0 * cs.fmin(cs.sqrt(dist_to_target_sq), 1.0)
             cost += heading_weight * heading_error_wrapped**2
 
             # Dynamics constraint: X[k+1] = X[k] + dt * f(X[k], U[k])
