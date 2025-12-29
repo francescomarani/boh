@@ -238,11 +238,18 @@ class ConfigurationSpacePlanner:
         return path
 
     def _simplify_path(self, path: List[Tuple[float, float]],
-                       min_distance: float = 0.5) -> List[Tuple[float, float]]:
+                       min_distance: float = 0.5,
+                       max_distance: float = 1.5) -> List[Tuple[float, float]]:
         """
         Simplify path by removing intermediate points.
 
         Uses line-of-sight checks to skip unnecessary waypoints.
+        Adds intermediate points if segments are too long for MPC to track.
+
+        Args:
+            path: Full path from A*
+            min_distance: Minimum distance between waypoints
+            max_distance: Maximum distance between waypoints (add intermediates if exceeded)
         """
         if len(path) <= 2:
             return path
@@ -269,7 +276,27 @@ class ConfigurationSpacePlanner:
 
             current_idx = farthest_visible
 
-        return simplified
+        # Post-process: add intermediate points for long segments
+        final_path = [simplified[0]]
+        for i in range(1, len(simplified)):
+            p1 = simplified[i-1]
+            p2 = simplified[i]
+            dist = np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+
+            if dist > max_distance:
+                # Add intermediate waypoints
+                n_segments = int(np.ceil(dist / max_distance))
+                for j in range(1, n_segments):
+                    t = j / n_segments
+                    intermediate = (
+                        p1[0] + t * (p2[0] - p1[0]),
+                        p1[1] + t * (p2[1] - p1[1])
+                    )
+                    final_path.append(intermediate)
+
+            final_path.append(p2)
+
+        return final_path
 
     def _line_of_sight(self, p1: Tuple[float, float], p2: Tuple[float, float]) -> bool:
         """Check if there's a clear line of sight between two points."""
