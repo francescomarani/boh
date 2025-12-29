@@ -452,7 +452,7 @@ if __name__ == "__main__":
             robot_radius=0.35,  # Albert robot radius (approximate)
             safety_margin=0.15,  # Safety margin
             use_soft_constraints=True,  # Soft + hard constraints for obstacle "vision"
-            soft_constraint_weight=30.0  # Higher weight for stronger avoidance reaction
+            soft_constraint_weight=150.0  # Much higher weight to push robot away from cabinets
         )
 
         # Run simulation
