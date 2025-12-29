@@ -458,10 +458,10 @@ if __name__ == "__main__":
         # Set enable_collision_avoidance=False for standard MPC (no obstacles)
 
         # Target: navigate BEHIND the bar counter
-        # Bar is at [3.0, 0.0] with size [0.6, 5.0] (extends y: -2.5 to +2.5)
-        # Barstools are at x=2.3, y in [-2, -1, 0, 1, 2]
-        # Cabinets are at x=4.65, y in [-1, 0, 1]
-        x_target = np.array([4.0, 0.0, 0.])  # Behind bar, between bar and cabinets
+        # Bar is at [3.0, 0.0] with size [0.6, 5.0] - right edge at x=3.3
+        # Cabinets are at x=4.65, y in [-1, 0, 1] - left edge at x=4.35
+        # With clearance 0.40m: valid zone is 3.70 < x < 3.95
+        x_target = np.array([3.8, 0.0, 0.])  # In the corridor between bar and cabinets
 
         # Create simulation with A* path planning + MPC tracking
         sim = AlbertSimulation(
