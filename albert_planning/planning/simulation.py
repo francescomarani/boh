@@ -13,6 +13,7 @@ from collision_avoidance_mpc import (
     Obstacle,
     obstacles_from_dict_list
 )
+from path_planner import ConfigurationSpacePlanner
 from tqdm import tqdm
 
 class AlbertSimulation:
@@ -22,6 +23,7 @@ class AlbertSimulation:
                  # Waypoint navigation parameters
                  waypoints=None,  # List of intermediate waypoints [[x1,y1], [x2,y2], ...]
                  waypoint_threshold=0.5,  # Distance to switch to next waypoint
+                 use_astar_planning=False,  # Use A* to generate waypoints automatically
                  # Collision avoidance parameters
                  enable_collision_avoidance=True,
                  robot_radius=0.35,
@@ -47,6 +49,7 @@ class AlbertSimulation:
         self.waypoints = waypoints if waypoints is not None else []
         self.waypoint_threshold = waypoint_threshold
         self.current_waypoint_idx = 0
+        self.use_astar_planning = use_astar_planning
 
         # Collision avoidance parameters
         self.enable_collision_avoidance = enable_collision_avoidance
@@ -117,6 +120,37 @@ class AlbertSimulation:
             # Get obstacles from environment (single source of truth)
             obstacle_dicts = env.get_mpc_obstacles()
             obstacle_list = obstacles_from_dict_list(obstacle_dicts)
+
+            # ===== A* PATH PLANNING =====
+            if self.use_astar_planning:
+                print("\n" + "-" * 40)
+                print("A* PATH PLANNING IN CONFIGURATION SPACE")
+                print("-" * 40)
+
+                planner = ConfigurationSpacePlanner(
+                    obstacles=obstacle_dicts,
+                    robot_radius=self.robot_radius,
+                    safety_margin=self.safety_margin
+                )
+
+                start = (self.x_init[0], self.x_init[1])
+                goal = (self.x_target[0], self.x_target[1])
+
+                path = planner.plan(start, goal, simplify=True)
+
+                if path is not None:
+                    # Convert path to waypoints (exclude start, include all others)
+                    self.waypoints = [[p[0], p[1]] for p in path[1:]]
+                    print(f"\nA* generated {len(self.waypoints)} waypoints:")
+                    for i, wp in enumerate(self.waypoints):
+                        print(f"  {i}: [{wp[0]:.2f}, {wp[1]:.2f}]")
+
+                    # Visualize the path
+                    planner.visualize(path, start, goal, save_path='astar_path.png')
+                else:
+                    print("WARNING: A* failed to find path! Using manual waypoints.")
+
+                print("-" * 40)
 
             # Create collision-aware MPC
             # Determine initial target (first waypoint or final target)
@@ -421,38 +455,28 @@ if __name__ == "__main__":
         # Set enable_collision_avoidance=True to enable obstacle avoidance
         # Set enable_collision_avoidance=False for standard MPC (no obstacles)
 
-        # Target: navigate BEHIND the bar counter (difficult - requires waypoints)
+        # Target: navigate BEHIND the bar counter
         # Bar is at [3.0, 0.0] with size [0.6, 5.0] (extends y: -2.5 to +2.5)
         # Barstools are at x=2.3, y in [-2, -1, 0, 1, 2]
-        # Direct path is blocked - need to go around via y > 2.5
+        # Cabinets are at x=4.65, y in [-1, 0, 1]
         x_target = np.array([4.0, 0.0, 0.])  # Behind bar, between bar and cabinets
 
-        # Waypoints to navigate around barstools and bar
-        # SIMPLIFIED: Let MPC handle cabinets autonomously with improved obstacle vision
-        # (decay_rate=2.0 gives ~1-2m visibility range for obstacles)
-        waypoints = [
-            [1.0, 3.0],   # Go up to avoid barstools
-            [3.5, 3.0],   # Pass the end of the bar
-            # Robot should autonomously avoid cabinets when going to target
-        ]
-        # Final target [4.0, 0.0] is reached after all waypoints
-
-        # Create simulation with collision avoidance and waypoints
+        # Create simulation with A* path planning + MPC tracking
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
-            Base_N=50,  # Longer horizon to plan around obstacles
+            Base_N=30,  # Shorter horizon (A* handles global planning)
             T=800,  # Max timesteps
             x_init=np.array([0., 0., 0.]),
             x_target=x_target,
-            # Waypoint navigation
-            waypoints=waypoints,
-            waypoint_threshold=0.5,  # Switch waypoint when within 0.5m
+            # A* path planning - generates waypoints automatically!
+            use_astar_planning=True,
+            waypoint_threshold=0.3,  # Switch waypoint when within 0.3m
             # Collision avoidance parameters
-            enable_collision_avoidance=True,  # Set to False to disable
-            robot_radius=0.35,  # Albert robot radius (approximate)
-            safety_margin=0.15,  # Safety margin
-            use_soft_constraints=True,  # Soft + hard constraints for obstacle "vision"
-            soft_constraint_weight=150.0  # Much higher weight to push robot away from cabinets
+            enable_collision_avoidance=True,
+            robot_radius=0.35,
+            safety_margin=0.15,
+            use_soft_constraints=True,  # Keep soft constraints for local refinement
+            soft_constraint_weight=50.0  # Lower weight since A* handles global path
         )
 
         # Run simulation
