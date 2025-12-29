@@ -99,6 +99,9 @@ class BarEnvironment(UrdfEnv):
             'tables': [],
             'chairs': []
         }
+
+        # Store obstacles for MPC (independent of parent class attribute)
+        self._mpc_obstacles = []
         
         # Setup scene if requested
         if auto_setup_scene:
@@ -206,15 +209,23 @@ class BarEnvironment(UrdfEnv):
         # Create obstacles list
         obstacles = []
         obstacles.append(BoxObstacle(name="bar_table", content_dict=bar_dict))
-        
+
         for i, wall_dict in enumerate(wall_dicts):
             wall_names = ["wall_top", "wall_bottom", "wall_right", "wall_left"]
             obstacles.append(BoxObstacle(name=wall_names[i], content_dict=wall_dict))
-        
+
         # Add all obstacles to environment
         for obstacle in obstacles:
             self.add_obstacle(obstacle)
-        
+
+        # Store bar obstacle for MPC (skip walls - handled by state bounds)
+        self._mpc_obstacles.append({
+            'name': 'bar_table',
+            'type': 'box',
+            'position': [self.BAR_POS[0], self.BAR_POS[1]],
+            'size': [self.BAR_SIZE[0], self.BAR_SIZE[1]]
+        })
+
         print(f"✓ Added {len(obstacles)} structural obstacles (walls + bar)")
     
     def _add_furniture_obstacles(self) -> None:
@@ -247,6 +258,13 @@ class BarEnvironment(UrdfEnv):
             furniture_obstacles.append(
                 BoxObstacle(name=f"obstacle_barstool_{y}", content_dict=stool_dict)
             )
+            # Store for MPC
+            self._mpc_obstacles.append({
+                'name': f'barstool_{y}',
+                'type': 'box',
+                'position': [2.3, y],
+                'size': [0.4, 0.4]
+            })
         
         # === TABLES (as cylinders for round tables) ===
         table_positions = [
@@ -272,6 +290,13 @@ class BarEnvironment(UrdfEnv):
             furniture_obstacles.append(
                 CylinderObstacle(name=f"obstacle_table_{i}", content_dict=table_dict)
             )
+            # Store for MPC
+            self._mpc_obstacles.append({
+                'name': f'table_{i}',
+                'type': 'circle',
+                'position': [pos[0], pos[1]],
+                'radius': 0.5
+            })
         
         # === CHAIRS (simplified as small boxes) ===
         # Define chairs around each table
@@ -286,12 +311,12 @@ class BarEnvironment(UrdfEnv):
         chair_counter = 0
         for table_idx, table_pos in enumerate(table_positions):
             for chair_idx, (offset, angle) in enumerate(chair_configs):
+                chair_x = table_pos[0] + offset[0]
+                chair_y = table_pos[1] + offset[1]
                 chair_dict = {
                     'type': 'box',
                     'geometry': {
-                        'position': [table_pos[0] + offset[0], 
-                                   table_pos[1] + offset[1], 
-                                   0.25],
+                        'position': [chair_x, chair_y, 0.25],
                         'width': 0.4,
                         'height': 0.5,
                         'length': 0.4,
@@ -300,9 +325,16 @@ class BarEnvironment(UrdfEnv):
                     'movable': False,
                 }
                 furniture_obstacles.append(
-                    BoxObstacle(name=f"obstacle_chair_{chair_counter}", 
+                    BoxObstacle(name=f"obstacle_chair_{chair_counter}",
                               content_dict=chair_dict)
                 )
+                # Store for MPC
+                self._mpc_obstacles.append({
+                    'name': f'chair_{chair_counter}',
+                    'type': 'box',
+                    'position': [chair_x, chair_y],
+                    'size': [0.4, 0.4]
+                })
                 chair_counter += 1
         
         # === CABINETS ===
@@ -322,6 +354,13 @@ class BarEnvironment(UrdfEnv):
             furniture_obstacles.append(
                 BoxObstacle(name=f"obstacle_cabinet_{y}", content_dict=cabinet_dict)
             )
+            # Store for MPC
+            self._mpc_obstacles.append({
+                'name': f'cabinet_{y}',
+                'type': 'box',
+                'position': [4.65, y],
+                'size': [0.6, 0.5]
+            })
         
         # Add all furniture obstacles to environment
         for obstacle in furniture_obstacles:
@@ -534,9 +573,7 @@ class BarEnvironment(UrdfEnv):
         """
         Get obstacles in format suitable for MPC collision avoidance.
 
-        This method extracts obstacle information from the environment's
-        internal obstacle dictionary and returns it in a simple format
-        that can be used by the MPC controller.
+        Returns the list of obstacles that were stored during scene setup.
 
         Returns
         -------
@@ -548,52 +585,4 @@ class BarEnvironment(UrdfEnv):
             - 'radius': radius for circle obstacles
             - 'size': [length, width] for box obstacles
         """
-        obstacles = []
-
-        if not hasattr(self, '_obsts') or not self._obsts:
-            return obstacles
-
-        for name, obs_info in self._obsts.items():
-            try:
-                name_str = str(name)
-
-                # Skip walls - they have huge bounding circles
-                # State bounds already prevent going outside the room
-                if 'wall' in name_str.lower():
-                    continue
-
-                # Get position from obstacle (it's a method in mpscenes)
-                if callable(getattr(obs_info, 'position', None)):
-                    pos = obs_info.position()
-                else:
-                    continue
-
-                # Get obstacle info from content_dict
-                if not hasattr(obs_info, 'content_dict'):
-                    continue
-
-                content = obs_info.content_dict
-                geom = content.get('geometry', {})
-                obs_type = content.get('type', 'box')
-
-                obstacle_info = {
-                    'name': name_str,
-                    'position': [float(pos[0]), float(pos[1])],
-                }
-
-                if obs_type == 'cylinder':
-                    obstacle_info['type'] = 'circle'
-                    obstacle_info['radius'] = geom.get('radius', 0.5)
-                else:  # box
-                    obstacle_info['type'] = 'box'
-                    obstacle_info['size'] = [
-                        geom.get('length', 1.0),
-                        geom.get('width', 1.0)
-                    ]
-
-                obstacles.append(obstacle_info)
-
-            except Exception as e:
-                print(f"Warning: Could not extract obstacle '{name}': {e}")
-
-        return obstacles
+        return self._mpc_obstacles
