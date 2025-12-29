@@ -427,13 +427,13 @@ if __name__ == "__main__":
         # Direct path is blocked - need to go around via y > 2.5
         x_target = np.array([4.0, 0.0, 0.])  # Behind bar, between bar and cabinets
 
-        # Waypoints to navigate around barstools, bar, AND cabinets
-        # Cabinets are at x=4.65, y in [0, 1, -1] - stay left of them!
-        # Path: start → go up → pass bar end → stay left of cabinets → target
+        # Waypoints to navigate around barstools and bar
+        # SIMPLIFIED: Let MPC handle cabinets autonomously with improved obstacle vision
+        # (decay_rate=2.0 gives ~1-2m visibility range for obstacles)
         waypoints = [
             [1.0, 3.0],   # Go up to avoid barstools
             [3.5, 3.0],   # Pass the end of the bar
-            [3.5, 0.0],   # Go down while staying LEFT of cabinets (x < 4.35)
+            # Robot should autonomously avoid cabinets when going to target
         ]
         # Final target [4.0, 0.0] is reached after all waypoints
 
@@ -452,7 +452,7 @@ if __name__ == "__main__":
             robot_radius=0.35,  # Albert robot radius (approximate)
             safety_margin=0.15,  # Safety margin
             use_soft_constraints=True,  # Soft + hard constraints for obstacle "vision"
-            soft_constraint_weight=10.0  # Low weight + fast decay avoids local minima
+            soft_constraint_weight=30.0  # Higher weight for stronger avoidance reaction
         )
 
         # Run simulation

@@ -206,9 +206,9 @@ class CollisionAvoidanceMPC(BaseMPC):
 
                         if self.use_soft_constraints:
                             # Exponential penalty: gives "vision" of obstacles
-                            # Fast decay (5.0) = only affects nearby obstacles
-                            # Low weight = avoids strong local minima
-                            decay_rate = 5.0  # Fast decay - only nearby obstacles matter
+                            # Slower decay = see obstacles from farther away
+                            # Higher weight = stronger avoidance reaction
+                            decay_rate = 2.0  # Slower decay - see obstacles from 1-2m away
                             penalty = self.soft_constraint_weight * cs.exp(
                                 -decay_rate * (dist - min_dist)
                             )
@@ -235,8 +235,8 @@ class CollisionAvoidanceMPC(BaseMPC):
 
                         if self.use_soft_constraints:
                             # Exponential penalty for boxes
-                            # Fast decay = only nearby obstacles matter
-                            decay_rate = 5.0
+                            # Slower decay = see obstacles from farther away
+                            decay_rate = 2.0  # Match circle obstacles for consistent vision
                             penalty = self.soft_constraint_weight * cs.exp(
                                 -decay_rate * (signed_dist - total_clearance)
                             )
