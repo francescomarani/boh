@@ -179,32 +179,54 @@ class CollisionAvoidanceMPC(BaseMPC):
                     robot_pos = X[k][:2]  # [x, y]
                     obs_pos = obs.position  # [x, y]
 
-                    # Distance squared from robot to obstacle center
-                    dx = robot_pos[0] - obs_pos[0]
-                    dy = robot_pos[1] - obs_pos[1]
-                    dist_squared = dx**2 + dy**2
+                    if obs.type == 'circle':
+                        # Circular obstacle: use Euclidean distance
+                        dx = robot_pos[0] - obs_pos[0]
+                        dy = robot_pos[1] - obs_pos[1]
+                        dist_squared = dx**2 + dy**2
+                        min_dist = obs.radius + total_clearance
+                        min_dist_squared = min_dist**2
 
-                    # Minimum distance required (obstacle radius + clearance)
-                    min_dist = obs.bounding_radius + total_clearance
-                    min_dist_squared = min_dist**2
+                        if self.use_soft_constraints:
+                            epsilon = 0.01
+                            penalty = self.soft_constraint_weight / (
+                                dist_squared - min_dist_squared + epsilon
+                            )
+                            cost += penalty
+                        else:
+                            opti.subject_to(dist_squared >= min_dist_squared)
 
-                    if self.use_soft_constraints:
-                        # Soft constraint: add barrier function to cost
-                        # Penalty increases as robot gets closer to obstacle
-                        # Using log barrier: -log(dist - min_dist)
-                        # Or exponential: exp(-k * (dist - min_dist))
+                    else:  # Box obstacle
+                        # Proper signed distance to axis-aligned box
+                        # Box half-sizes
+                        half_x = obs.size[0] / 2.0
+                        half_y = obs.size[1] / 2.0
 
-                        # Use smooth penalty: large when close, small when far
-                        # penalty = weight / (dist_squared - min_dist_squared + epsilon)
-                        epsilon = 0.01  # Prevent division by zero
-                        penalty = self.soft_constraint_weight / (
-                            dist_squared - min_dist_squared + epsilon
-                        )
-                        cost += penalty
-                    else:
-                        # Hard constraint: distance must be greater than minimum
-                        # dist_squared >= min_dist_squared
-                        opti.subject_to(dist_squared >= min_dist_squared)
+                        # Distance from robot to box edges
+                        dx = cs.fabs(robot_pos[0] - obs_pos[0]) - half_x
+                        dy = cs.fabs(robot_pos[1] - obs_pos[1]) - half_y
+
+                        # Signed distance to box (positive outside, negative inside)
+                        # dist = sqrt(max(dx,0)^2 + max(dy,0)^2) + min(max(dx,dy),0)
+                        dist_outside_sq = cs.fmax(dx, 0)**2 + cs.fmax(dy, 0)**2
+                        dist_inside = cs.fmin(cs.fmax(dx, dy), 0)
+
+                        if self.use_soft_constraints:
+                            # Soft constraint: penalize getting close
+                            # Use squared distance for smooth optimization
+                            signed_dist_sq = dist_outside_sq + dist_inside**2
+                            epsilon = 0.01
+                            penalty = self.soft_constraint_weight / (
+                                signed_dist_sq - total_clearance**2 + epsilon
+                            )
+                            cost += cs.fmax(penalty, 0)  # Only positive penalty
+                        else:
+                            # Hard constraint: signed distance >= clearance
+                            # For outside: sqrt(dist_outside_sq) >= clearance
+                            # Equivalent to: dist_outside_sq >= clearance^2 when outside
+                            # Also need: dx < 0 AND dy < 0 means inside (not allowed)
+                            # Simplified: require distance to nearest edge >= clearance
+                            opti.subject_to(dist_outside_sq >= total_clearance**2)
 
         # Minimize cost
         opti.minimize(cost)
@@ -276,7 +298,20 @@ class CollisionAvoidanceMPC(BaseMPC):
         min_obs_name = ""
 
         for obs in self.obstacles:
-            dist = np.linalg.norm(robot_pos - obs.position) - obs.bounding_radius
+            if obs.type == 'circle':
+                dist = np.linalg.norm(robot_pos - obs.position) - obs.radius
+            else:  # Box
+                # Signed distance to axis-aligned box
+                half_x = obs.size[0] / 2.0
+                half_y = obs.size[1] / 2.0
+                dx = abs(robot_pos[0] - obs.position[0]) - half_x
+                dy = abs(robot_pos[1] - obs.position[1]) - half_y
+                # Distance outside box
+                dist_outside = np.sqrt(max(dx, 0)**2 + max(dy, 0)**2)
+                # Distance inside box (negative)
+                dist_inside = min(max(dx, dy), 0)
+                dist = dist_outside + dist_inside
+
             if dist < min_dist:
                 min_dist = dist
                 min_obs_name = obs.name
