@@ -404,8 +404,8 @@ if __name__ == "__main__":
             enable_collision_avoidance=True,  # Set to False to disable
             robot_radius=0.35,  # Albert robot radius (approximate)
             safety_margin=0.15,  # Safety margin
-            use_soft_constraints=False,  # Hard constraints only (no repulsive barrier)
-            soft_constraint_weight=50.0  # Not used when soft constraints disabled
+            use_soft_constraints=True,  # Soft + hard constraints for obstacle "vision"
+            soft_constraint_weight=10.0  # Low weight + fast decay avoids local minima
         )
 
         # Run simulation
