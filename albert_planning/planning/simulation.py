@@ -472,7 +472,7 @@ if __name__ == "__main__":
             x_target=x_target,
             # A* path planning - generates waypoints automatically!
             use_astar_planning=True,
-            waypoint_threshold=0.3,  # Switch waypoint when within 0.3m
+            waypoint_threshold=0.6,  # Switch waypoint when within 0.6m (easier to reach)
             # Collision avoidance parameters
             enable_collision_avoidance=True,
             robot_radius=0.35,
