@@ -510,7 +510,7 @@ if __name__ == "__main__":
         )
 
         # Run simulation (render=False for headless environments)
-        history, x_real, u_real, x_all = sim.run_albert(render=False)
+        history, x_real, u_real, x_all = sim.run_albert(render=True)
 
         # Plot comprehensive results with obstacles
         plot_results(x_real, u_real, sim.x_target, sim.dt,
