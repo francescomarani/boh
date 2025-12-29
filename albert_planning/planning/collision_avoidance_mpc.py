@@ -187,14 +187,17 @@ class CollisionAvoidanceMPC(BaseMPC):
                         min_dist = obs.radius + total_clearance
                         min_dist_squared = min_dist**2
 
+                        # HYBRID: Always add hard constraint with reduced clearance
+                        hard_clearance = obs.radius + self.robot_radius + 0.05  # Small margin
+                        opti.subject_to(dist_squared >= hard_clearance**2)
+
                         if self.use_soft_constraints:
+                            # Also add soft penalty for smoother avoidance
                             epsilon = 0.01
                             penalty = self.soft_constraint_weight / (
                                 dist_squared - min_dist_squared + epsilon
                             )
-                            cost += penalty
-                        else:
-                            opti.subject_to(dist_squared >= min_dist_squared)
+                            cost += cs.fmax(penalty, 0)
 
                     else:  # Box obstacle
                         # Proper signed distance to axis-aligned box
@@ -207,26 +210,21 @@ class CollisionAvoidanceMPC(BaseMPC):
                         dy = cs.fabs(robot_pos[1] - obs_pos[1]) - half_y
 
                         # Signed distance to box (positive outside, negative inside)
-                        # dist = sqrt(max(dx,0)^2 + max(dy,0)^2) + min(max(dx,dy),0)
                         dist_outside_sq = cs.fmax(dx, 0)**2 + cs.fmax(dy, 0)**2
-                        dist_inside = cs.fmin(cs.fmax(dx, dy), 0)
+
+                        # HYBRID: Always add hard constraint with reduced clearance
+                        hard_clearance = self.robot_radius + 0.05  # Small margin
+                        opti.subject_to(dist_outside_sq >= hard_clearance**2)
 
                         if self.use_soft_constraints:
-                            # Soft constraint: penalize getting close
-                            # Use squared distance for smooth optimization
+                            # Also add soft penalty for smoother avoidance
+                            dist_inside = cs.fmin(cs.fmax(dx, dy), 0)
                             signed_dist_sq = dist_outside_sq + dist_inside**2
                             epsilon = 0.01
                             penalty = self.soft_constraint_weight / (
                                 signed_dist_sq - total_clearance**2 + epsilon
                             )
-                            cost += cs.fmax(penalty, 0)  # Only positive penalty
-                        else:
-                            # Hard constraint: signed distance >= clearance
-                            # For outside: sqrt(dist_outside_sq) >= clearance
-                            # Equivalent to: dist_outside_sq >= clearance^2 when outside
-                            # Also need: dx < 0 AND dy < 0 means inside (not allowed)
-                            # Simplified: require distance to nearest edge >= clearance
-                            opti.subject_to(dist_outside_sq >= total_clearance**2)
+                            cost += cs.fmax(penalty, 0)
 
         # Minimize cost
         opti.minimize(cost)
