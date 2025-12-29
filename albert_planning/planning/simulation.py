@@ -122,6 +122,7 @@ class AlbertSimulation:
                 safety_margin=self.safety_margin,
                 use_soft_constraints=self.use_soft_constraints,
                 soft_constraint_weight=self.soft_constraint_weight,
+                constraint_every_n_steps=2,  # Reduce constraints for faster solving
                 SOLVER_MAX_ITER=SOLVER_MAX_ITER,
                 DO_WARM_START=DO_WARM_START
             )
@@ -395,7 +396,7 @@ if __name__ == "__main__":
         # Create simulation with collision avoidance
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
-            Base_N=50,  # Longer horizon to see obstacles ahead
+            Base_N=30,  # Moderate horizon (reduced for faster solving with many obstacles)
             T=600,  # Max timesteps
             x_init=np.array([0., 0., 0.]),
             x_target=x_target,

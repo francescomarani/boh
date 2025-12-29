@@ -262,7 +262,8 @@ class CollisionAvoidanceMPC(BaseMPC):
 
         # Set solver options for subsequent solves
         # Use higher max_iter for collision avoidance (more complex problem)
-        opts["ipopt.max_iter"] = max(self.max_iter, 50)
+        # With many obstacles, need more iterations to converge
+        opts["ipopt.max_iter"] = max(self.max_iter, 200)
         opti.solver("ipopt", opts)
 
         return opti, X, U, p_x_init
