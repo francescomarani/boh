@@ -158,15 +158,54 @@ class CollisionAvoidanceMPC(BaseMPC):
             # Input cost
             cost += self.wu * U[k].T @ U[k]
 
-            # HEADING ALIGNMENT COST: Encourage robot to face the target
-            # This promotes "rotate then translate" behavior
+            # ADAPTIVE HEADING COST:
+            # - Far from obstacles: face the target (rotate-then-translate)
+            # - Close to obstacles: face AWAY from obstacle (enable reverse escape)
+
+            # Direction to target
             dx_to_target = p_x_target[0] - X[k][0]
             dy_to_target = p_x_target[1] - X[k][1]
-            desired_heading = cs.atan2(dy_to_target, dx_to_target)
+            heading_to_target = cs.atan2(dy_to_target, dx_to_target)
+
+            # Find influence from nearby obstacles (weighted sum)
+            escape_dx = 0.0
+            escape_dy = 0.0
+            obstacle_influence = 0.0
+
+            for obs in self.obstacles:
+                obs_dx = X[k][0] - obs.position[0]
+                obs_dy = X[k][1] - obs.position[1]
+                dist_to_obs = cs.sqrt(obs_dx**2 + obs_dy**2 + 1e-6)
+
+                # Influence decreases with distance (inverse square)
+                # Strong influence when dist < 1.0m, weak beyond 2.0m
+                influence = cs.fmax(0, 1.0 - dist_to_obs / 2.0)**2
+
+                # Accumulate escape direction (away from obstacle)
+                escape_dx += influence * obs_dx / dist_to_obs
+                escape_dy += influence * obs_dy / dist_to_obs
+                obstacle_influence += influence
+
+            # Normalize escape direction
+            escape_magnitude = cs.sqrt(escape_dx**2 + escape_dy**2 + 1e-6)
+            escape_heading = cs.atan2(escape_dy, escape_dx)
+
+            # Blend between target heading and escape heading based on obstacle proximity
+            # obstacle_influence = 0 → use target heading
+            # obstacle_influence > 0 → blend toward escape heading
+            blend_factor = cs.fmin(obstacle_influence, 1.0)  # Cap at 1.0
+
+            # Interpolate angles using atan2 of blended sin/cos
+            target_weight = 1.0 - blend_factor
+            escape_weight = blend_factor
+            blended_cos = target_weight * cs.cos(heading_to_target) + escape_weight * cs.cos(escape_heading)
+            blended_sin = target_weight * cs.sin(heading_to_target) + escape_weight * cs.sin(escape_heading)
+            desired_heading = cs.atan2(blended_sin, blended_cos)
+
+            # Heading error
             heading_error = X[k][2] - desired_heading
-            # Wrap to [-pi, pi] using sin/cos trick
             heading_error_wrapped = cs.atan2(cs.sin(heading_error), cs.cos(heading_error))
-            heading_weight = 10.0  # Encourage alignment
+            heading_weight = 10.0
             cost += heading_weight * heading_error_wrapped**2
 
             # Dynamics constraint: X[k+1] = X[k] + dt * f(X[k], U[k])
