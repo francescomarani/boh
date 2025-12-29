@@ -122,7 +122,7 @@ class AlbertSimulation:
                 safety_margin=self.safety_margin,
                 use_soft_constraints=self.use_soft_constraints,
                 soft_constraint_weight=self.soft_constraint_weight,
-                constraint_every_n_steps=2,  # Reduce constraints for faster solving
+                constraint_every_n_steps=1,  # Check every step for safety
                 SOLVER_MAX_ITER=SOLVER_MAX_ITER,
                 DO_WARM_START=DO_WARM_START
             )
@@ -404,8 +404,8 @@ if __name__ == "__main__":
             enable_collision_avoidance=True,  # Set to False to disable
             robot_radius=0.35,  # Albert robot radius (approximate)
             safety_margin=0.15,  # Safety margin
-            use_soft_constraints=False,  # Hard constraints for guaranteed avoidance
-            soft_constraint_weight=200.0  # Not used when hard constraints are enabled
+            use_soft_constraints=True,  # Soft constraints - never infeasible, allows recovery
+            soft_constraint_weight=500.0  # High weight for strong obstacle repulsion
         )
 
         # Run simulation
