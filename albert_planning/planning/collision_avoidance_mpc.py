@@ -158,6 +158,17 @@ class CollisionAvoidanceMPC(BaseMPC):
             # Input cost
             cost += self.wu * U[k].T @ U[k]
 
+            # HEADING ALIGNMENT COST: Encourage robot to face the target
+            # This promotes "rotate then translate" behavior
+            dx_to_target = p_x_target[0] - X[k][0]
+            dy_to_target = p_x_target[1] - X[k][1]
+            desired_heading = cs.atan2(dy_to_target, dx_to_target)
+            heading_error = X[k][2] - desired_heading
+            # Wrap to [-pi, pi] using sin/cos trick
+            heading_error_wrapped = cs.atan2(cs.sin(heading_error), cs.cos(heading_error))
+            heading_weight = 10.0  # Encourage alignment
+            cost += heading_weight * heading_error_wrapped**2
+
             # Dynamics constraint: X[k+1] = X[k] + dt * f(X[k], U[k])
             opti.subject_to(
                 X[k + 1] == self.dynamics.discrete_dynamics(X[k], U[k])
