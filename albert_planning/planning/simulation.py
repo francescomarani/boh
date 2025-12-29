@@ -387,11 +387,11 @@ if __name__ == "__main__":
         # Set enable_collision_avoidance=True to enable obstacle avoidance
         # Set enable_collision_avoidance=False for standard MPC (no obstacles)
 
-        # Target: navigate BEHIND the bar counter
+        # Target: navigate to end of bar (accessible without going through barstools)
         # Bar is at [3.0, 0.0] with size [0.6, 5.0] (extends y: -2.5 to +2.5)
-        # Cabinets are at x=4.65
-        # Robot must go around the bar (via y > 2.5 or y < -2.5)
-        x_target = np.array([4.0, 0.0, 0.])  # Behind bar, between bar and cabinets
+        # Barstools are at x=2.3, y in [-2, -1, 0, 1, 2]
+        # This target is reachable by going around barstools via y > 2.5
+        x_target = np.array([3.0, 3.5, 0.])  # End of bar, past the barstools
 
         # Create simulation with collision avoidance
         sim = AlbertSimulation(
