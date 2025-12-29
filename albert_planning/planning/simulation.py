@@ -489,28 +489,28 @@ if __name__ == "__main__":
         # The discrete controller should handle this better than MPC
         x_target = np.array([3.8, 0.0, 0.])  # Behind the bar - tight corridor!
 
-        # Create simulation with A* path planning + discrete controller
+        # Create simulation with A* path planning + MPC with hard constraints
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
-            Base_N=30,  # Not used with discrete controller
+            Base_N=30,  # MPC horizon
             T=800,  # Max timesteps
             x_init=np.array([0., 0., 0.]),
             x_target=x_target,
             # A* path planning - generates waypoints automatically!
             use_astar_planning=True,
-            waypoint_threshold=0.5,  # Tighter threshold works well with discrete controller
-            # Use discrete controller (rotate-then-translate)
-            use_discrete_controller=True,  # Simple 3-action controller!
+            waypoint_threshold=0.5,
+            # Use MPC (not discrete controller)
+            use_discrete_controller=False,  # Use MPC with collision avoidance!
             # Collision avoidance parameters
             enable_collision_avoidance=True,
             robot_radius=0.35,
-            safety_margin=0.05,  # Reduced from 0.15 to fit through tight corridor
-            use_soft_constraints=True,  # Not used with discrete controller
-            soft_constraint_weight=50.0  # Not used with discrete controller
+            safety_margin=0.05,  # Reduced to fit through tight corridor (1.05m wide)
+            use_soft_constraints=True,  # Soft constraints allow some flexibility in tight spaces
+            soft_constraint_weight=50.0
         )
 
-        # Run simulation
-        history, x_real, u_real, x_all = sim.run_albert(render=True)
+        # Run simulation (render=False for headless environments)
+        history, x_real, u_real, x_all = sim.run_albert(render=False)
 
         # Plot comprehensive results with obstacles
         plot_results(x_real, u_real, sim.x_target, sim.dt,
