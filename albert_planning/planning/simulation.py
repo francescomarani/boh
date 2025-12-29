@@ -8,12 +8,7 @@ from bar_env import BarEnvironment
 import visualization
 from models import DifferentialDriveDynamics
 from mpc_planning import BaseMPC
-from collision_avoidance_mpc import (
-    CollisionAvoidanceMPC,
-    Obstacle,
-    extract_obstacles_from_environment,
-    create_obstacles_from_bar_layout
-)
+from collision_avoidance_mpc import CollisionAvoidanceMPC
 from tqdm import tqdm
 
 class AlbertSimulation:
@@ -107,18 +102,14 @@ class AlbertSimulation:
             print("COLLISION AVOIDANCE ENABLED")
             print("=" * 60)
 
-            # Use predefined bar layout (more reliable than extraction)
-            # The extracted obstacles have incorrect radii and names
-            obstacle_list = create_obstacles_from_bar_layout()
-
-            # Create collision-aware MPC
+            # Create collision-aware MPC using obstacles from environment
             self.base_mpc = CollisionAvoidanceMPC(
                 dynamics=self.base_model,
                 N=self.Base_N,
                 x_target=self.x_target,
                 wx=STATE_WEIGHT,
                 wu=INPUT_WEIGHT,
-                obstacles=obstacle_list,
+                env=env,  # Pass environment directly!
                 robot_radius=self.robot_radius,
                 safety_margin=self.safety_margin,
                 use_soft_constraints=self.use_soft_constraints,
@@ -126,7 +117,7 @@ class AlbertSimulation:
                 SOLVER_MAX_ITER=SOLVER_MAX_ITER,
                 DO_WARM_START=DO_WARM_START
             )
-            self.obstacles = obstacle_list
+
         else:
             print("\n" + "=" * 60)
             print("COLLISION AVOIDANCE DISABLED (using standard MPC)")
@@ -246,57 +237,76 @@ class AlbertSimulation:
         return history, x_real, u_real, x_all
 
 
-def plot_results(x_real, u_real, x_target, dt, save_path='albert_mpc_results.png',
-                 obstacles=None, robot_radius=0.35):
+def plot_results(
+    x_real: np.ndarray,
+    u_real: np.ndarray,
+    x_target: np.ndarray,
+    dt: float,
+    save_path: str = 'albert_mpc_results.png',
+    env=None,
+    robot_radius: float = 0.35
+):
     """
-    Create comprehensive visualization of MPC results
-
-    Args:
-        x_real: State trajectory (3, T+1) [x, y, theta]
-        u_real: Control input trajectory (2, T) [v, omega]
-        x_target: Target state (3,) [x, y, theta]
-        dt: Timestep
-        save_path: Path to save figure
-        obstacles: List of Obstacle objects to visualize
-        robot_radius: Robot radius for visualization
+    Create comprehensive visualization of MPC results.
+    
+    Parameters
+    ----------
+    x_real : np.ndarray
+        State trajectory (3, T+1) [x, y, theta]
+    u_real : np.ndarray
+        Control input trajectory (2, T) [v, omega]
+    x_target : np.ndarray
+        Target state (3,) [x, y, theta]
+    dt : float
+        Timestep
+    save_path : str
+        Path to save figure
+    env : BarEnvironment, optional
+        Environment to extract obstacles from
+    robot_radius : float
+        Robot radius for visualization
     """
     fig = plt.figure(figsize=(16, 10))
     gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
-
+    
     # 1. 2D Trajectory with orientation arrows
     ax1 = fig.add_subplot(gs[0:2, 0:2])
-
-    # Plot obstacles first (behind trajectory)
-    if obstacles is not None and len(obstacles) > 0:
-        for obs in obstacles:
-            if obs.type == 'circle':
-                circle = plt.Circle(obs.position, obs.radius,
-                                    color='red', alpha=0.3, zorder=1)
+    
+    # Plot obstacles from environment if available
+    if env is not None and hasattr(env, 'get_obstacles'):
+        obstacles = env.get_obstacles()
+        for obst_id, obst in obstacles.items():
+            # Skip walls for cleaner visualization
+            if 'wall' in str(obst.name()).lower():
+                continue
+            
+            obs_pos = obst.position()[:2]
+            obs_size = obst.size()
+            
+            if obst.type() == 'cylinder':
+                obs_radius = obs_size[0]
+                circle = plt.Circle(obs_pos, obs_radius, color='red', alpha=0.3, zorder=1)
                 ax1.add_patch(circle)
-            elif obs.type == 'box':
-                # Draw rectangle centered at position
-                half_size = obs.size / 2
-                rect = plt.Rectangle(
-                    (obs.position[0] - half_size[0], obs.position[1] - half_size[1]),
-                    obs.size[0], obs.size[1],
-                    color='red', alpha=0.3, zorder=1
-                )
-                ax1.add_patch(rect)
-
+            elif obst.type() == 'box':
+                # Bounding circle
+                obs_radius = np.sqrt(obs_size[0]**2 + obs_size[1]**2) / 2
+                circle = plt.Circle(obs_pos, obs_radius, color='red', alpha=0.3, zorder=1)
+                ax1.add_patch(circle)
+    
     ax1.plot(x_real[0, :], x_real[1, :], 'b-', linewidth=2.5, label='Robot trajectory')
     ax1.plot(x_real[0, 0], x_real[1, 0], 'go', markersize=12, label='Start', zorder=5)
     ax1.plot(x_target[0], x_target[1], 'r*', markersize=20, label='Goal', zorder=5)
     
-    # Draw orientation arrows every N steps
+    # Draw orientation arrows
     arrow_step = max(1, len(x_real[0]) // 15)
     for i in range(0, x_real.shape[1], arrow_step):
         dx = 0.15 * np.cos(x_real[2, i])
         dy = 0.15 * np.sin(x_real[2, i])
-        ax1.arrow(x_real[0, i], x_real[1, i], dx, dy, 
+        ax1.arrow(x_real[0, i], x_real[1, i], dx, dy,
                  head_width=0.1, head_length=0.08, fc='blue', ec='blue', alpha=0.6)
     
-    # Draw goal circle
-    circle = plt.Circle((x_target[0], x_target[1]), 0.2, color='red', fill=False, 
+    # Goal circle
+    circle = plt.Circle((x_target[0], x_target[1]), 0.2, color='red', fill=False,
                         linestyle='--', linewidth=2, label='Goal region (20cm)')
     ax1.add_patch(circle)
     
@@ -364,15 +374,14 @@ def plot_results(x_real, u_real, x_target, dt, save_path='albert_mpc_results.png
     ax6.set_title('Distance to Goal', fontsize=12, fontweight='bold')
     ax6.set_yscale('log')
     
-    # Add overall title
-    fig.suptitle('Albert Mobile Base - MPC Control Results', 
+    # Overall title
+    fig.suptitle('Albert Mobile Base - MPC Control Results',
                  fontsize=16, fontweight='bold', y=0.98)
     
     # Save figure
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"\n✓ Results plot saved to: {save_path}")
     plt.show()
-
 
 if __name__ == "__main__":
     show_warnings = False
@@ -409,8 +418,10 @@ if __name__ == "__main__":
         # Run simulation
         history, x_real, u_real, x_all = sim.run_albert(render=True)
 
-        # Plot comprehensive results with obstacles
-        plot_results(x_real, u_real, sim.x_target, sim.dt,
-                     save_path='albert_mpc_collision_avoidance_results.png',
-                     obstacles=sim.obstacles if hasattr(sim, 'obstacles') else None,
-                     robot_radius=sim.robot_radius)
+        # Plot results with obstacles from environment
+        plot_results(
+            x_real, u_real, sim.x_target, sim.dt,
+            save_path='albert_mpc_collision_avoidance_results.png',
+            env=sim.env,  # Pass environment to extract obstacles
+            robot_radius=sim.robot_radius
+        )
