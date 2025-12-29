@@ -19,6 +19,9 @@ class AlbertSimulation:
     def __init__(self, dt=0.01, Base_N=20, Arm_N=10,
                  T=50, x_init=np.array([0., 1., 0.]),
                  x_target=np.array([5., 0., 0.]),
+                 # Waypoint navigation parameters
+                 waypoints=None,  # List of intermediate waypoints [[x1,y1], [x2,y2], ...]
+                 waypoint_threshold=0.5,  # Distance to switch to next waypoint
                  # Collision avoidance parameters
                  enable_collision_avoidance=True,
                  robot_radius=0.35,
@@ -38,7 +41,12 @@ class AlbertSimulation:
         self.T = T  # Total simulation time steps
         self.plot_trajectories = False  # Plot trajectories flag
         self.x_init = x_init  # Initial state
-        self.x_target = x_target  # Target state
+        self.x_target = x_target  # Final target state
+
+        # Waypoint navigation
+        self.waypoints = waypoints if waypoints is not None else []
+        self.waypoint_threshold = waypoint_threshold
+        self.current_waypoint_idx = 0
 
         # Collision avoidance parameters
         self.enable_collision_avoidance = enable_collision_avoidance
@@ -111,10 +119,20 @@ class AlbertSimulation:
             obstacle_list = obstacles_from_dict_list(obstacle_dicts)
 
             # Create collision-aware MPC
+            # Determine initial target (first waypoint or final target)
+            initial_target = self.x_target
+            if len(self.waypoints) > 0:
+                wp = self.waypoints[0]
+                initial_target = np.array([wp[0], wp[1], 0.])
+                print(f"\nWaypoint navigation enabled:")
+                print(f"  Waypoints: {self.waypoints}")
+                print(f"  Final target: [{self.x_target[0]:.2f}, {self.x_target[1]:.2f}]")
+                print(f"  Starting with waypoint 0: [{wp[0]:.2f}, {wp[1]:.2f}]")
+
             self.base_mpc = CollisionAvoidanceMPC(
                 dynamics=self.base_model,
                 N=self.Base_N,
-                x_target=self.x_target,
+                x_target=initial_target,
                 wx=STATE_WEIGHT,
                 wu=INPUT_WEIGHT,
                 obstacles=obstacle_list,
@@ -200,14 +218,30 @@ class AlbertSimulation:
             
             # Extract REAL state using PyBullet API (not MPC prediction!)
             x_real[:, t+1] = ob['robot_0']["joint_state"]["position"][0:3]
-            
+
             # Save for visualization (only base control)
             x_all[:, :, t] = x_all_out
             u_real[:, t] = u_base  # Save only base control
             theta_all[t] = theta_out
             history.append(ob)
-            
-            # Check convergence
+
+            # ===== WAYPOINT NAVIGATION =====
+            if len(self.waypoints) > 0 and self.current_waypoint_idx < len(self.waypoints):
+                current_wp = self.waypoints[self.current_waypoint_idx]
+                dist_to_wp = np.linalg.norm(x_real[0:2, t+1] - np.array(current_wp[:2]))
+
+                if dist_to_wp < self.waypoint_threshold:
+                    self.current_waypoint_idx += 1
+                    if self.current_waypoint_idx < len(self.waypoints):
+                        # Move to next intermediate waypoint
+                        next_wp = self.waypoints[self.current_waypoint_idx]
+                        self.base_mpc.update_target(np.array([next_wp[0], next_wp[1], 0.]))
+                    else:
+                        # All waypoints reached, go to final target
+                        self.base_mpc.update_target(self.x_target)
+                        print(f"\n✓ All waypoints reached! Navigating to final target.")
+
+            # Check convergence to FINAL target
             distance = np.linalg.norm(x_real[0:2, t+1] - self.x_target[0:2])
             if distance < 0.2:  # 20cm threshold
                 print(f"\n✓ Goal reached at step {t}!")
@@ -387,20 +421,31 @@ if __name__ == "__main__":
         # Set enable_collision_avoidance=True to enable obstacle avoidance
         # Set enable_collision_avoidance=False for standard MPC (no obstacles)
 
-        # Target: navigate BETWEEN two tables
-        # Table 1 at [-2.0, 1.0] with chairs at y=0.3 and y=1.7
-        # Table 2 at [-2.0, -3.0] with chairs at y=-2.3 and y=-3.7
-        # Gap between tables: y from -2.3 to 0.3 (width ~2.6m)
-        # Robot must navigate through this corridor
-        x_target = np.array([-3.0, -1.0, 0.])  # Behind tables, in the gap between them
+        # Target: navigate BEHIND the bar counter (difficult - requires waypoints)
+        # Bar is at [3.0, 0.0] with size [0.6, 5.0] (extends y: -2.5 to +2.5)
+        # Barstools are at x=2.3, y in [-2, -1, 0, 1, 2]
+        # Direct path is blocked - need to go around via y > 2.5
+        x_target = np.array([4.0, 0.0, 0.])  # Behind bar, between bar and cabinets
 
-        # Create simulation with collision avoidance
+        # Waypoints to navigate around barstools and bar
+        # Path: start → go up → pass bar end → behind bar → down to target
+        waypoints = [
+            [1.0, 3.0],   # Go up to avoid barstools
+            [3.5, 3.0],   # Pass the end of the bar
+            [4.0, 1.5],   # Behind bar, coming down
+        ]
+        # Final target [4.0, 0.0] is reached after all waypoints
+
+        # Create simulation with collision avoidance and waypoints
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
             Base_N=50,  # Longer horizon to plan around obstacles
             T=800,  # Max timesteps
             x_init=np.array([0., 0., 0.]),
             x_target=x_target,
+            # Waypoint navigation
+            waypoints=waypoints,
+            waypoint_threshold=0.5,  # Switch waypoint when within 0.5m
             # Collision avoidance parameters
             enable_collision_avoidance=True,  # Set to False to disable
             robot_radius=0.35,  # Albert robot radius (approximate)
