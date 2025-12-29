@@ -62,12 +62,18 @@ class DiscreteController:
 
         Returns angle in [-pi, pi] that robot needs to turn.
         Positive = need to turn left, Negative = need to turn right.
+
+        Note: Albert robot has facing_direction='-y', meaning forward motion
+        is perpendicular to the standard heading convention. We add π/2 to
+        compensate.
         """
         dx = self.target[0] - x[0]
         dy = self.target[1] - x[1]
 
-        # Desired heading
-        desired_heading = np.arctan2(dy, dx)
+        # Desired heading (with offset for Albert's facing direction)
+        # Standard: atan2(dy, dx) assumes forward = +x when θ=0
+        # Albert: forward = -y when θ=0, so we add π/2
+        desired_heading = np.arctan2(dy, dx) + np.pi / 2
 
         # Current heading
         current_heading = x[2]
@@ -104,9 +110,11 @@ class DiscreteController:
 
     def check_forward_clear(self, x: np.ndarray, look_ahead: float = 0.5) -> bool:
         """Check if path ahead is clear of obstacles."""
-        # Position ahead in current heading direction
-        ahead_x = x[0] + look_ahead * np.cos(x[2])
-        ahead_y = x[1] + look_ahead * np.sin(x[2])
+        # Position ahead in actual forward direction
+        # Albert robot: forward is θ - π/2 due to facing_direction='-y'
+        forward_angle = x[2] - np.pi / 2
+        ahead_x = x[0] + look_ahead * np.cos(forward_angle)
+        ahead_y = x[1] + look_ahead * np.sin(forward_angle)
         ahead = np.array([ahead_x, ahead_y, x[2]])
 
         min_dist, _ = self.get_min_obstacle_distance(ahead)
