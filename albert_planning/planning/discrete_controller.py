@@ -177,17 +177,17 @@ class DiscreteControllerWithAvoidance(DiscreteController):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Keep avoidance thresholds close to min_clearance so robot can follow A* path
-        # A* uses smaller clearance (robot_radius + 0.05 = 0.40m)
-        # Discrete controller should only avoid when actually in danger
-        self.avoidance_distance = self.min_clearance + 0.05  # Start avoiding at 0.55m
-        self.clear_distance = self.min_clearance + 0.15  # Exit avoidance at 0.65m
+        # Very tight thresholds for navigating narrow corridors
+        # With safety_margin=0.05, min_clearance = 0.40m
+        # Only avoid when actually about to collide
+        self.avoidance_distance = self.min_clearance  # Start avoiding at min_clearance (0.40m)
+        self.clear_distance = self.min_clearance + 0.05  # Exit avoidance at 0.45m
 
         # State for hysteresis
         self.avoiding = False
         self.avoidance_direction = 0  # +1 = rotating left, -1 = rotating right
         self.avoidance_steps = 0
-        self.min_avoidance_steps = 5  # Fewer steps - don't over-rotate
+        self.min_avoidance_steps = 3  # Very few steps - quick reactions in tight spaces
 
     def solve(self, x: np.ndarray) -> Tuple[np.ndarray, None, None, None]:
         """Get control with obstacle avoidance and hysteresis."""

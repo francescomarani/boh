@@ -504,7 +504,7 @@ if __name__ == "__main__":
             # Collision avoidance parameters
             enable_collision_avoidance=True,
             robot_radius=0.35,
-            safety_margin=0.15,
+            safety_margin=0.05,  # Reduced from 0.15 to fit through tight corridor
             use_soft_constraints=True,  # Not used with discrete controller
             soft_constraint_weight=50.0  # Not used with discrete controller
         )
