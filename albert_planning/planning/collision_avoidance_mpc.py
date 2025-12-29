@@ -56,6 +56,7 @@ class CollisionAvoidanceMPC(BaseMPC):
     - Box obstacle avoidance (using bounding circles)
     - Optional soft constraints (barrier functions)
     - Configurable safety margins
+    - Dynamic obstacle filtering (only nearby obstacles)
 
     Args:
         dynamics: DifferentialDriveDynamics object
@@ -71,6 +72,8 @@ class CollisionAvoidanceMPC(BaseMPC):
         constraint_every_n_steps: Apply constraints every N steps (reduces computation)
         SOLVER_MAX_ITER: Max iterations for subsequent solves
         DO_WARM_START: Enable warm start
+        max_obstacles: Maximum number of obstacles to consider (nearest ones)
+        obstacle_horizon: Only consider obstacles within this distance (meters)
     """
 
     def __init__(self, dynamics, N: int, x_target: np.ndarray,
@@ -82,15 +85,20 @@ class CollisionAvoidanceMPC(BaseMPC):
                  soft_constraint_weight: float = 100.0,
                  constraint_every_n_steps: int = 1,
                  SOLVER_MAX_ITER: int = 10,
-                 DO_WARM_START: bool = True):
+                 DO_WARM_START: bool = True,
+                 max_obstacles: int = 8,
+                 obstacle_horizon: float = 2.5):
 
         # Store collision avoidance parameters before creating optimization problem
-        self.obstacles = obstacles if obstacles is not None else []
+        self.all_obstacles = obstacles if obstacles is not None else []  # Full list
+        self.obstacles = []  # Active (nearby) obstacles - set dynamically
         self.robot_radius = robot_radius
         self.safety_margin = safety_margin
         self.use_soft_constraints = use_soft_constraints
         self.soft_constraint_weight = soft_constraint_weight
         self.constraint_every_n_steps = constraint_every_n_steps
+        self.max_obstacles = max_obstacles
+        self.obstacle_horizon = obstacle_horizon
 
         # Initialize parent attributes manually (don't call super().__init__ as it
         # expects 4 return values from _create_optimization_problem, but we return 5)
@@ -102,6 +110,17 @@ class CollisionAvoidanceMPC(BaseMPC):
         self.max_iter = SOLVER_MAX_ITER
         self.warm_start = DO_WARM_START
 
+        # Current robot position (for obstacle filtering)
+        self.current_position = np.zeros(2)
+
+        # Hysteresis for recovery behavior
+        self.recovery_direction = 0  # 0=none, 1=left, -1=right
+        self.recovery_steps = 0
+        self.min_recovery_steps = 10  # Keep rotating same direction for at least N steps
+
+        # Filter obstacles based on initial target position
+        self._update_active_obstacles(x_target[:2])
+
         # Create optimization problem (returns 5 values including p_x_target)
         self.opti, self.X_var, self.U_var, self.p_x_init, self.p_x_target = self._create_optimization_problem()
 
@@ -109,10 +128,48 @@ class CollisionAvoidanceMPC(BaseMPC):
         print(f"  Robot radius: {robot_radius}m")
         print(f"  Safety margin: {safety_margin}m")
         print(f"  Total clearance: {robot_radius + safety_margin}m")
-        print(f"  Number of obstacles: {len(self.obstacles)}")
+        print(f"  Total obstacles: {len(self.all_obstacles)}")
+        print(f"  Active obstacles: {len(self.obstacles)} (max={max_obstacles}, horizon={obstacle_horizon}m)")
         print(f"  Soft constraints: {use_soft_constraints}")
         if use_soft_constraints:
             print(f"  Soft constraint weight: {soft_constraint_weight}")
+
+    def _update_active_obstacles(self, position: np.ndarray) -> bool:
+        """
+        Update active obstacles based on current position.
+
+        Only obstacles within obstacle_horizon distance are considered.
+        Returns True if obstacles changed (requires problem rebuild).
+        """
+        # Calculate distance to each obstacle
+        obstacle_distances = []
+        for obs in self.all_obstacles:
+            if obs.type == 'circle':
+                dist = np.linalg.norm(position - obs.position) - obs.radius
+            else:  # Box
+                half_x = obs.size[0] / 2.0
+                half_y = obs.size[1] / 2.0
+                dx = abs(position[0] - obs.position[0]) - half_x
+                dy = abs(position[1] - obs.position[1]) - half_y
+                dist = np.sqrt(max(dx, 0)**2 + max(dy, 0)**2)
+            obstacle_distances.append((dist, obs))
+
+        # Sort by distance and filter
+        obstacle_distances.sort(key=lambda x: x[0])
+
+        # Select nearest obstacles within horizon
+        new_obstacles = []
+        for dist, obs in obstacle_distances:
+            if dist <= self.obstacle_horizon and len(new_obstacles) < self.max_obstacles:
+                new_obstacles.append(obs)
+
+        # Check if obstacles changed
+        old_names = set(obs.name for obs in self.obstacles)
+        new_names = set(obs.name for obs in new_obstacles)
+        changed = old_names != new_names
+
+        self.obstacles = new_obstacles
+        return changed
 
     def _create_optimization_problem(self):
         """
@@ -330,6 +387,7 @@ class CollisionAvoidanceMPC(BaseMPC):
         Solve MPC problem for current state with dynamic target.
 
         Overrides parent method to set the target parameter before solving.
+        Dynamically updates active obstacles based on robot position.
 
         Args:
             x_init: current state [x, y, theta]
@@ -340,6 +398,14 @@ class CollisionAvoidanceMPC(BaseMPC):
             x_traj: predicted trajectory
             theta_next: next orientation
         """
+        # Update current position
+        self.current_position = x_init[:2]
+
+        # Check if we need to rebuild optimization problem (obstacles changed)
+        if self._update_active_obstacles(x_init[:2]):
+            print(f"  Rebuilding MPC with {len(self.obstacles)} nearby obstacles")
+            self.opti, self.X_var, self.U_var, self.p_x_init, self.p_x_target = self._create_optimization_problem()
+
         # Set target parameter before solving
         self.opti.set_value(self.p_x_target, self.x_target[:2])
 
@@ -362,6 +428,10 @@ class CollisionAvoidanceMPC(BaseMPC):
             u_opt = sol.value(self.U_var[0])
             x_next = sol.value(self.X_var[1])
 
+            # Reset recovery state on success
+            self.recovery_direction = 0
+            self.recovery_steps = 0
+
             # Extract full trajectory
             x_traj = np.zeros((3, self.N + 1))
             for k in range(self.N + 1):
@@ -370,8 +440,66 @@ class CollisionAvoidanceMPC(BaseMPC):
             return u_opt, x_next, x_traj, x_next[2]
 
         except Exception as e:
-            print(f"MPC solver failed: {e}")
-            u_safe = np.zeros(2)
+            # MPC failed - execute recovery maneuver with hysteresis
+            print(f"MPC FAILED: {str(e)[:80]}")
+
+            # Check distance to nearest obstacle
+            min_dist, obs_name = self.get_min_obstacle_distance(x_init)
+            clearance = min_dist - self.robot_radius
+
+            # Calculate heading error to target
+            dx = self.x_target[0] - x_init[0]
+            dy = self.x_target[1] - x_init[1]
+            desired_heading = np.arctan2(dy, dx) + np.pi / 2  # Albert's facing direction offset
+            heading_error = desired_heading - x_init[2]
+            heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
+
+            if clearance < 0.05:
+                # EMERGENCY: Very close to obstacle - backup!
+                print(f"  EMERGENCY BACKUP: clearance={clearance:.2f}m to {obs_name}")
+                u_safe = np.array([-0.5, 0.0])  # Reverse
+                self.recovery_direction = 0  # Reset hysteresis on backup
+                self.recovery_steps = 0
+            elif clearance < 0.15:
+                # Close to obstacle - rotate with hysteresis to avoid oscillation
+                self.recovery_steps += 1
+
+                # Decide direction: keep previous if in hysteresis window
+                if self.recovery_direction != 0 and self.recovery_steps < self.min_recovery_steps:
+                    # Keep rotating in committed direction
+                    rotate_dir = self.recovery_direction
+                else:
+                    # Choose new direction based on heading error
+                    rotate_dir = 1.0 if heading_error > 0 else -1.0
+                    self.recovery_direction = rotate_dir
+                    self.recovery_steps = 0
+
+                # Allow slow forward motion while rotating if aligned with target
+                if abs(heading_error) < 1.0:  # Less than ~60 degrees off
+                    forward_v = 0.2  # Slow forward
+                    print(f"  TIGHT: clearance={clearance:.2f}m, creeping forward + rotating {'left' if rotate_dir > 0 else 'right'}")
+                else:
+                    forward_v = 0.0
+                    print(f"  AVOIDING: clearance={clearance:.2f}m, rotating {'left' if rotate_dir > 0 else 'right'}")
+                u_safe = np.array([forward_v, rotate_dir * 0.8])
+            elif clearance < 0.4:
+                # Some clearance - move forward with rotation toward target
+                rotate_dir = 1.0 if heading_error > 0 else -1.0
+                # Scale forward speed based on how aligned we are
+                forward_v = 0.5 * max(0.0, np.cos(heading_error))
+                print(f"  RECOVERY: v={forward_v:.2f}, rotating toward target (err={np.degrees(heading_error):.1f}°)")
+                u_safe = np.array([forward_v, rotate_dir * 0.6])
+                self.recovery_direction = 0
+                self.recovery_steps = 0
+            else:
+                # Good clearance - move toward target
+                rotate_dir = 1.0 if heading_error > 0 else -1.0
+                forward_v = 0.8 * max(0.0, np.cos(heading_error))
+                print(f"  OPEN: v={forward_v:.2f}, heading toward target (err={np.degrees(heading_error):.1f}°)")
+                u_safe = np.array([forward_v, rotate_dir * 0.5])
+                self.recovery_direction = 0
+                self.recovery_steps = 0
+
             x_traj = np.tile(x_init.reshape(-1, 1), (1, self.N + 1))
             return u_safe, x_init, x_traj, x_init[2]
 
@@ -379,20 +507,22 @@ class CollisionAvoidanceMPC(BaseMPC):
         """
         Compute minimum distance from robot position to any obstacle.
 
+        Uses ALL obstacles (not just active ones) for safety.
+
         Args:
             x: Robot state [x, y, theta]
 
         Returns:
             Tuple of (min_distance, obstacle_name)
         """
-        if len(self.obstacles) == 0:
+        if len(self.all_obstacles) == 0:
             return float('inf'), ""
 
         robot_pos = x[:2]
         min_dist = float('inf')
         min_obs_name = ""
 
-        for obs in self.obstacles:
+        for obs in self.all_obstacles:
             if obs.type == 'circle':
                 dist = np.linalg.norm(robot_pos - obs.position) - obs.radius
             else:  # Box

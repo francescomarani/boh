@@ -505,7 +505,7 @@ if __name__ == "__main__":
             enable_collision_avoidance=True,
             robot_radius=0.35,
             safety_margin=0.05,  # Reduced to fit through tight corridor (1.05m wide)
-            use_soft_constraints=True,  # Soft constraints allow some flexibility in tight spaces
+            use_soft_constraints=False,  # HARD constraints only - must not collide!
             soft_constraint_weight=50.0
         )
 
