@@ -3,12 +3,30 @@ import gymnasium as gym
 import numpy as np
 import pybullet as p
 import matplotlib.pyplot as plt
+import time
+import math
+import visualization
+
 from urdfenvs.robots.generic_urdf.generic_diff_drive_robot import GenericDiffDriveRobot
 from bar_env import BarEnvironment
-import visualization
 from models import DifferentialDriveDynamics
 from mpc_planning import BaseMPC
 from tqdm import tqdm
+from prm_planner import PRMPlanner
+
+
+def get_robot_pos(env):
+    """Get current position [x, y, theta]"""
+    pos, quat = p.getBasePositionAndOrientation(env._robots[0]._robot)
+    euler = p.getEulerFromQuaternion(quat)
+    
+    # Apply offset
+    theta_offset = np.pi / 2
+    corrected_theta = (euler[2] + theta_offset + np.pi) % (2 * np.pi) - np.pi    # Normalize to [-pi, pi]
+    
+    return np.array([pos[0], pos[1], corrected_theta])
+
+
 
 class AlbertSimulation:
     def __init__(self, dt=0.01, Base_N=20, Arm_N=10,
@@ -19,6 +37,8 @@ class AlbertSimulation:
         # MPC PARAMETERS
         self.Base_N = Base_N  # Base MPC time horizon
         self.Arm_N = Arm_N    # Arm MPC time horizon
+
+        # MPC Weights
         STATE_WEIGHT = 50.0
         INPUT_WEIGHT = 20
         SOLVER_MAX_ITER = 30
@@ -65,23 +85,55 @@ class AlbertSimulation:
                 facing_direction = '-y',
             ),
         ]
-        env: BarEnvironment = BarEnvironment(
-            dt=self.dt, robots=robots, render=render
-        )
-        
-        # Reset environment with initial configuration
-        ob = env.reset(
-            pos=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.5, 0.0, 1.8, 0.5])
-        )
-        print(f"Initial observation: {ob}")
-        
+
+        # --- 1. SETUP ---
+        # Initialize Environment
+        env: BarEnvironment = BarEnvironment(dt=self.dt, robots=robots, render=render)
         self.env = env
-        history = self.simulate(ob[0])
+        start_pos = [-4.0, 8.0, 0.2]  # Start at Z=0.2 to prevent floor bouncing
+        goal_pos = (0.0, 0.0)
+        
+        # Reset Env
+        ob, info = env.reset()
+        robot_id = env._robots[0]._robot
+        
+
+        # --- 2. PRM PLANNING  ---
+        print("Initializing Planner...")
+        # Hidding robot underground so that planner doesn't hit it
+        p.resetBasePositionAndOrientation(robot_id, [0, 0, -10], [0,0,0,1])
+    
+        # Bounds: [x_min, x_max, y_min, y_max] (Based on room size)
+        prm = PRMPlanner(bounds=[-4.5, 4.5, -9.5, 9.5], robot_radius=0.5)
+        prm.build_roadmap(n_samples=1000, connect_dist=5.0)  # Build Map
+
+        # Uncomment to see the whole roadmap connections in blue
+        prm.draw_roadmap() # drawing roadmap 
+
+        # Find Path
+        print(f"Planning path from {start_pos[:2]} to {goal_pos}...")
+        path = prm.find_path((start_pos[0], start_pos[1]), goal_pos)
+
+        # Bring robot back to start
+        print(f"Teleporting robot to start position...")
+        p.resetBasePositionAndOrientation(robot_id, start_pos, p.getQuaternionFromEuler([0, 0, 0]))
+
+        if not path:
+            print("Failed to find path! Robot is stuck.")
+            env.close()
+            return None
+        # Draw final path in green
+        prm.draw_path(path)
+        
+        
+        # --- 3. RUN SIMULATION ---
+        #history = self.simulate(ob[0])
+        history = self.simulate(ob, path)
         
         env.close()
         return history
     
-    def simulate(self, ob):
+    def simulate(self, ob, path=None):
         """
         Run the MPC simulation loop
         
@@ -95,7 +147,8 @@ class AlbertSimulation:
         u_real = np.zeros((2, T))  # [v, omega]
         
         # Get initial state from environment using PyBullet API
-        x_real[:,0]= ob['robot_0']["joint_state"]["position"][0:3]
+        #x_real[:,0]= ob['robot_0']["joint_state"]["position"][0:3]
+        x_real[:,0] = get_robot_pos(self.env)
         
         # IMPORTANT: Determine the total action dimension from environment
         # The environment expects action for base + arm + gripper
@@ -110,8 +163,41 @@ class AlbertSimulation:
         
         theta_all = np.zeros((T))
         history = []
+
+        # --- NEW additions for path follwoing ---
+        path_idx = 0
+        if path is not None:
+            print(f"Tracking PRM path with {len(path)} waypoints.")
+        # -----------------------------------
         
         for t in tqdm(range(0, T), desc='Simulating'):
+            # --- MPC + PRM implementation ---
+            # Waypoint update logic (in case we give MPC a path to follow)
+            if path is not None:
+                # Get current robot position
+                curr_pos = x_real[:, t]
+                
+                # Check if we should switch to next waypoint
+                if path_idx < len(path):
+                    target_pt = path[path_idx]
+                    dist = np.linalg.norm(curr_pos[0:2] - np.array(target_pt))
+                    
+                    if dist < 0.4 and path_idx < len(path) - 1:
+                        path_idx += 1
+                        target_pt = path[path_idx]
+                    
+                    # Update the MPC's target to the current waypoint
+                    # We keep the current orientation (or calculate one facing the point)
+                    dx = target_pt[0] - curr_pos[0]
+                    dy = target_pt[1] - curr_pos[1]
+                    target_theta = math.atan2(dy, dx)
+                    
+                    self.base_mpc.x_target = np.array([target_pt[0], target_pt[1], target_theta])
+                    
+                    # Draw Red Line to target
+                    p.addUserDebugLine([curr_pos[0], curr_pos[1], 0.5], [target_pt[0], target_pt[1], 0.5], [1,0,0], lifeTime=0.1)
+            # -------------------------------------
+            
             # Current state
             x_current = x_real[:, t]
             
