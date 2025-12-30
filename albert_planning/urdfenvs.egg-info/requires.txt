@@ -1,0 +1,10 @@
+gymnasium
+numpy
+pybullet
+casadi
+matplotlib
+yourdfpy
+robotmodels
+dill
+mpscenes
+tqdm

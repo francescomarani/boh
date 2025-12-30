@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: urdfenvs
+Version: 0.10.2
+Summary: Local copy of urdfenvs for the Albert example
+Author: Your Name
+License: MIT
+Requires-Python: >=3.8
+Requires-Dist: gymnasium
+Requires-Dist: numpy
+Requires-Dist: pybullet
+Requires-Dist: casadi
+Requires-Dist: matplotlib
+Requires-Dist: yourdfpy
+Requires-Dist: robotmodels
+Requires-Dist: dill
+Requires-Dist: mpscenes
+Requires-Dist: tqdm
