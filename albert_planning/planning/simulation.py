@@ -491,7 +491,7 @@ if __name__ == "__main__":
         # Create simulation with PURE MPC (no waypoints) - tests MPC collision avoidance directly!
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
-            Base_N=30,  # MPC horizon
+            Base_N=50,  # MPC horizon - increased for better lookahead (2.5s)
             T=800,  # Max timesteps
             x_init=np.array([0., 0., 0.]),
             x_target=x_target,
@@ -503,9 +503,9 @@ if __name__ == "__main__":
             # Collision avoidance parameters
             enable_collision_avoidance=True,
             robot_radius=0.35,
-            safety_margin=0.05,  # Reduced to fit through tight corridor (1.05m wide)
+            safety_margin=0.15,  # Increased margin for better avoidance
             use_soft_constraints=True,  # HYBRID: Hard constraints + soft penalty for vision
-            soft_constraint_weight=50.0  # Exponential penalty weight
+            soft_constraint_weight=200.0  # Increased weight for stronger repulsion
         )
 
         # Run simulation (render=False for headless environments)
