@@ -482,11 +482,11 @@ if __name__ == "__main__":
         # Set enable_collision_avoidance=True to enable obstacle avoidance
         # Set enable_collision_avoidance=False for standard MPC (no obstacles)
 
-        # Target: navigate BETWEEN two tables on the left side (collision avoidance test!)
-        # Table 1 at [-2.0, 1.0] and Table 2 at [-2.0, -3.0]
-        # Target is between them, close to the left wall
-        # Robot must navigate through chairs and avoid obstacles
-        x_target = np.array([-3.0, -1.0, 0.])  # Between tables near left wall
+        # Target: navigate to TOP-RIGHT CORNER of the room (collision avoidance test!)
+        # Room corners: top-right [5.0, 10.0], top-left [-5.0, 10.0],
+        #               bottom-right [5.0, -10.0], bottom-left [-5.0, -10.0]
+        # Target with safety margin from walls
+        x_target = np.array([4.5, 9.5, 0.])  # Top-right corner with margin
 
         # Create simulation with A* path planning + MPC with hard constraints
         sim = AlbertSimulation(
