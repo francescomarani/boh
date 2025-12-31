@@ -482,12 +482,11 @@ if __name__ == "__main__":
         # Set enable_collision_avoidance=True to enable obstacle avoidance
         # Set enable_collision_avoidance=False for standard MPC (no obstacles)
 
-        # Target: navigate BEHIND the bar counter (tight corridor challenge!)
-        # Bar is at [3.0, 0.0] with size [0.6, 5.0] - right edge at x=3.3
-        # Cabinets are at x=4.65 - left edge at x=4.35
-        # Corridor is only 1.05m wide - very challenging!
-        # The discrete controller should handle this better than MPC
-        x_target = np.array([3.8, 0.0, 0.])  # Behind the bar - tight corridor!
+        # Target: navigate BETWEEN two tables on the left side (collision avoidance test!)
+        # Table 1 at [-2.0, 1.0] and Table 2 at [-2.0, -3.0]
+        # Target is between them, close to the left wall
+        # Robot must navigate through chairs and avoid obstacles
+        x_target = np.array([-3.0, -1.0, 0.])  # Between tables near left wall
 
         # Create simulation with A* path planning + MPC with hard constraints
         sim = AlbertSimulation(
