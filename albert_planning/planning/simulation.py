@@ -488,15 +488,15 @@ if __name__ == "__main__":
         # Target with safety margin from walls
         x_target = np.array([4.5, 9.5, 0.])  # Top-right corner with margin
 
-        # Create simulation with A* path planning + MPC with hard constraints
+        # Create simulation with PURE MPC (no waypoints) - tests MPC collision avoidance directly!
         sim = AlbertSimulation(
             dt=0.05,  # 50ms timestep
             Base_N=30,  # MPC horizon
             T=800,  # Max timesteps
             x_init=np.array([0., 0., 0.]),
             x_target=x_target,
-            # A* path planning - generates waypoints automatically!
-            use_astar_planning=True,
+            # NO A* path planning - MPC navigates directly to target!
+            use_astar_planning=False,
             waypoint_threshold=0.5,
             # Use MPC (not discrete controller)
             use_discrete_controller=False,  # Use MPC with collision avoidance!
