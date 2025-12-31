@@ -485,8 +485,8 @@ if __name__ == "__main__":
         # Target: navigate to TOP-RIGHT CORNER of the room (collision avoidance test!)
         # Room corners: top-right [5.0, 10.0], top-left [-5.0, 10.0],
         #               bottom-right [5.0, -10.0], bottom-left [-5.0, -10.0]
-        # Target with safety margin from walls
-        x_target = np.array([4.5, 9.5, 0.])  # Top-right corner with margin
+        # Target with clearance from walls (0.5m from each wall for safety_margin)
+        x_target = np.array([4.0, 9.0, 0.])  # Top-right area, reachable with safety margin
 
         # Create simulation with PURE MPC (no waypoints) - tests MPC collision avoidance directly!
         sim = AlbertSimulation(
