@@ -218,12 +218,43 @@ class BarEnvironment(UrdfEnv):
         for obstacle in obstacles:
             self.add_obstacle(obstacle)
 
-        # Store bar obstacle for MPC (skip walls - handled by state bounds)
+        # Store ALL obstacles for MPC (including walls!)
+        # Bar counter
         self._mpc_obstacles.append({
             'name': 'bar_table',
             'type': 'box',
             'position': [self.BAR_POS[0], self.BAR_POS[1]],
             'size': [self.BAR_SIZE[0], self.BAR_SIZE[1]]
+        })
+
+        # Walls as MPC obstacles (not just state bounds)
+        # Top wall
+        self._mpc_obstacles.append({
+            'name': 'wall_top',
+            'type': 'box',
+            'position': [0, wall_offset_horiz],
+            'size': [wall_size_horiz[0], wall_size_horiz[1]]
+        })
+        # Bottom wall
+        self._mpc_obstacles.append({
+            'name': 'wall_bottom',
+            'type': 'box',
+            'position': [0, -wall_offset_horiz],
+            'size': [wall_size_horiz[0], wall_size_horiz[1]]
+        })
+        # Right wall
+        self._mpc_obstacles.append({
+            'name': 'wall_right',
+            'type': 'box',
+            'position': [wall_offset_vert, 0],
+            'size': [wall_size_vert[0], wall_size_vert[1]]
+        })
+        # Left wall
+        self._mpc_obstacles.append({
+            'name': 'wall_left',
+            'type': 'box',
+            'position': [-wall_offset_vert, 0],
+            'size': [wall_size_vert[0], wall_size_vert[1]]
         })
 
         print(f"✓ Added {len(obstacles)} structural obstacles (walls + bar)")
