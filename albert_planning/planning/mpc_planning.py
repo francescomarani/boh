@@ -181,219 +181,219 @@ class BaseMPC:
             
 class ArmMPC:
     """
-    Joint-space MPC for a subset of arm joints.
+    Acceleration-input MPC for a manipulator using ManipulatorDynamics.
 
-    - Dynamics: q_{k+1} = q_k + dt * u_k (u = joint velocities)
-    - Cost: sum_k wq * ||q_k - q_target||^2 + wu * ||u_k||^2
-    - Optional slew regularization, command speed clamp, and task-space goal
-      conversion via `set_task_space_goal`.
-    - Uses CasADi Opti and warm-starting like BaseMPC.
+    State x = [q, qdot], input u = qddot.
+    Cost tracks end-effector position (via linearized FK), joint velocities,
+    and accelerations, with terminal cost on end-effector position.
+    Torque constraints are optional (off by default unless enforce_tau=True
+    and inv_dyn is available).
     """
-    def __init__(self, robot, arm_indices, N, dt, q_target_arm,
-                 wq=50.0, wu=5.0, terminal_wq=None, u_slew_weight=0.0,
-                 max_joint_speed=None, SOLVER_MAX_ITER=50, DO_WARM_START=True):
-        self.robot = robot
-        self.arm_idxs = list(arm_indices)
+
+    def __init__(
+        self,
+        model,
+        N,
+        ee_target=np.zeros(3),
+        w_p=50.0,
+        w_v=1.0,
+        w_a=1.0,
+        w_final=None,
+        u_min=None,
+        u_max=None,
+        SOLVER_MAX_ITER=50,
+        DO_WARM_START=True,
+        ENFORCE_TAU=False,
+    ):
+        self.model = model
         self.N = int(N)
-        self.dt = float(dt)
-        self.n = len(self.arm_idxs)
-        self.q_target = np.asarray(q_target_arm).reshape(self.n)
-        self.wq = float(wq)
-        self.wu = float(wu)
-        self.terminal_wq = float(terminal_wq) if terminal_wq is not None else 10.0 * float(wq)
-        self.u_slew_weight = float(u_slew_weight)
+        self.n = model.n
+        self.dt = float(model.dt)
+        self.ee_target = np.asarray(ee_target).reshape(3)
+        self.w_p = float(w_p)
+        self.w_v = float(w_v)
+        self.w_a = float(w_a)
+        self.w_final = float(w_final) if w_final is not None else 10.0 * float(w_p)
         self.max_iter = SOLVER_MAX_ITER
         self.warm_start = DO_WARM_START
-        if max_joint_speed is None:
-            self.cmd_speed_limit = None
+        self.enforce_tau = ENFORCE_TAU and (self.model.inv_dyn is not None)
+        self.pb_joint_ids = [self.model.robot._robot_joints[idx] for idx in self.model.arm_indices]
+        self.end_link_index = self.model.ee_link_index if self.model.ee_link_index is not None else self.pb_joint_ids[-1]
+
+        # State and torque bounds from the model
+        self.q_min = np.asarray(model.q_min).reshape(self.n)
+        self.q_max = np.asarray(model.q_max).reshape(self.n)
+        self.qd_min = np.asarray(model.qd_min).reshape(self.n)
+        self.qd_max = np.asarray(model.qd_max).reshape(self.n)
+        self.tau_min = np.asarray(model.tau_min).reshape(self.n)
+        self.tau_max = np.asarray(model.tau_max).reshape(self.n)
+
+        # Acceleration bounds: prefer robot limits if available, else fallback
+        if u_min is not None and u_max is not None:
+            self.u_min = np.asarray(u_min).reshape(self.n)
+            self.u_max = np.asarray(u_max).reshape(self.n)
         else:
-            speed_arr = np.asarray(max_joint_speed)
-            if speed_arr.size == 1:
-                speed_arr = np.ones(self.n) * float(speed_arr)
-            self.cmd_speed_limit = speed_arr.reshape(self.n)
-        self.end_link_index = None
+            try:
+                acc = model.robot._limit_acc_j
+                self.u_min = np.array([acc[0, idx] for idx in model.arm_indices])
+                self.u_max = np.array([acc[1, idx] for idx in model.arm_indices])
+            except Exception:
+                self.u_min = -np.ones(self.n) * 5.0
+                self.u_max = np.ones(self.n) * 5.0
 
-        # Build simple bounds from robot if available (safe fallback if not)
-        try:
-            # robot._limit_vel_j: shape (2, n_joints) -> second row is max velocities
-            u_max = np.array(
-                [abs(self.robot._limit_vel_j[1, idx + 1]) for idx in self.arm_idxs]
-            )
-            # Avoid degenerate zero-velocity limits
-            u_max = np.where(u_max < 1e-3, 0.5, u_max)
-            u_min = -u_max
-        except Exception:
-            u_max = np.ones(self.n) * 1.0
-            u_min = -u_max
-
-        try:
-            # robot._limit_pos_j: shape (2, n_joints+1?) try safe indexing
-            q_min = np.array([self.robot._limit_pos_j[0, idx + 1] for idx in self.arm_idxs])
-            q_max = np.array([self.robot._limit_pos_j[1, idx + 1] for idx in self.arm_idxs])
-        except Exception:
-            q_min = np.ones(self.n) * -10.0
-            q_max = np.ones(self.n) * 10.0
-
-        self.u_min = u_min
-        self.u_max = u_max
-        self.q_min = q_min
-        self.q_max = q_max
-
-        # Build casadi problem
-        self.opti, self.Q_var, self.U_var, self.p_q_init, self.p_q_target = (
-            self._create_optimization_problem()
-        )
+        (
+            self.opti,
+            self.X_var,
+            self.U_var,
+            self.p_x_init,
+            self.p_ee_target,
+            self.p_q_lin,
+            self.p_ee_lin,
+            self.p_J,
+        ) = self._create_optimization_problem()
 
     def _create_optimization_problem(self):
         opti = cs.Opti()
-        Q = [opti.variable(self.n) for _ in range(self.N + 1)]
+        X = [opti.variable(2 * self.n) for _ in range(self.N + 1)]
         U = [opti.variable(self.n) for _ in range(self.N)]
 
-        # Input bounds
-        for k in range(self.N):
-            opti.subject_to(opti.bounded(self.u_min, U[k], self.u_max))
+        p_x_init = opti.parameter(2 * self.n)
+        p_ee_target = opti.parameter(3)
+        p_q_lin = opti.parameter(self.n)
+        p_ee_lin = opti.parameter(3)
+        p_J = opti.parameter(3, self.n)
 
-        # Parameters: initial state and target state (set at each solve)
-        p_q_init = opti.parameter(self.n)
-        p_q_target = opti.parameter(self.n)
-        opti.subject_to(Q[0] == p_q_init)
+        opti.subject_to(X[0] == p_x_init)
 
-        # Dynamics & costs
         cost = 0
         for k in range(self.N):
-            pos_err = Q[k] - p_q_target
-            cost += self.wq * (pos_err.T @ pos_err)
-            cost += self.wu * (U[k].T @ U[k])
-            if self.u_slew_weight > 0 and k > 0:
-                du = U[k] - U[k - 1]
-                cost += self.u_slew_weight * (du.T @ du)
-            # Euler dynamics
-            opti.subject_to(Q[k + 1] == Q[k] + self.dt * U[k])
-            # Position bounds
-            opti.subject_to(opti.bounded(self.q_min, Q[k], self.q_max))
+            qk = X[k][: self.n]
+            qdk = X[k][self.n :]
+            uk = U[k]
 
-        # Terminal cost and bounds
-        term_err = Q[-1] - p_q_target
-        cost += self.terminal_wq * (term_err.T @ term_err)
-        opti.subject_to(opti.bounded(self.q_min, Q[-1], self.q_max))
+            opti.subject_to(opti.bounded(self.q_min, qk, self.q_max))
+            opti.subject_to(opti.bounded(self.qd_min, qdk, self.qd_max))
+            opti.subject_to(opti.bounded(self.u_min, uk, self.u_max))
+
+            ee_pos = p_ee_lin + cs.mtimes(p_J, (qk - p_q_lin))
+            cost += self.w_p * cs.sumsqr(ee_pos - p_ee_target)
+            cost += self.w_v * cs.sumsqr(qdk)
+            cost += self.w_a * cs.sumsqr(uk)
+
+            opti.subject_to(X[k + 1] == self.model.discrete_f(X[k], uk))
+
+            if self.enforce_tau:
+                tau_k = self.model.inv_dyn(X[k], uk)
+                opti.subject_to(opti.bounded(self.tau_min, tau_k, self.tau_max))
+
+        qT = X[-1][: self.n]
+        qdT = X[-1][self.n :]
+        opti.subject_to(opti.bounded(self.q_min, qT, self.q_max))
+        opti.subject_to(opti.bounded(self.qd_min, qdT, self.qd_max))
+
+        ee_T = p_ee_lin + cs.mtimes(p_J, (qT - p_q_lin))
+        cost += self.w_final * cs.sumsqr(ee_T - p_ee_target)
 
         opti.minimize(cost)
 
         opts = {
             "ipopt.print_level": 0,
             "print_time": 0,
-            "ipopt.max_iter": 500,
             "ipopt.tol": 1e-4,
+            "ipopt.constr_viol_tol": 1e-4,
+            "ipopt.compl_inf_tol": 1e-4,
         }
         opti.solver("ipopt", opts)
+        return opti, X, U, p_x_init, p_ee_target, p_q_lin, p_ee_lin, p_J
 
-        # initial solve to initialize
-        opti.set_value(p_q_init, np.zeros(self.n))
-        opti.set_value(p_q_target, np.zeros(self.n))
-        opti.solve()
+    def _full_q(self, q_arm):
+        """
+        Build joint vectors for all joints on the body (length = p.getNumJoints()).
+        Overwrite arm joint slots with q_arm.
+        """
+        num_joints = p.getNumJoints(self.model.robot._robot)
+        joint_ids = list(range(num_joints))
+        joint_states = p.getJointStates(self.model.robot._robot, joint_ids)
+        q_full = [js[0] for js in joint_states]  # length = num_joints
+        for i_local, pb_idx in enumerate(self.pb_joint_ids):
+            if 0 <= pb_idx < num_joints:
+                q_full[pb_idx] = float(q_arm[i_local])
+        return q_full
 
-        # reduce max_iter for subsequent solves
-        opts["ipopt.max_iter"] = self.max_iter
-        opti.solver("ipopt", opts)
+    def _linearized_fk(self, q_curr):
+        if self.end_link_index is None:
+            raise RuntimeError("End-effector link index is required for FK linearization.")
+        # ensure link index is valid
+        if not (0 <= self.end_link_index < p.getNumJoints(self.model.robot._robot)):
+            raise RuntimeError(f"End-effector link index {self.end_link_index} invalid for body joints.")
+        ee_state = p.getLinkState(self.model.robot._robot, self.end_link_index, computeLinkVelocity=0)
+        ee_pos = np.array(ee_state[0])
+        num_joints = p.getNumJoints(self.model.robot._robot)
+        q_full = self._full_q(q_curr)
+        zeros = [0.0] * num_joints
+        J_t, _, _ = p.calculateJacobian(
+            self.model.robot._robot,
+            self.end_link_index,
+            [0, 0, 0],
+            list(q_full),
+            zeros,
+            zeros,
+        )
+        J_t = np.array(J_t)
+        # J_t corresponds to joint indices 0..num_joints-1; pick arm columns
+        cols = [pb_idx for pb_idx in self.pb_joint_ids if 0 <= pb_idx < J_t.shape[1]]
+        J_arm = J_t[:, cols]
+        return ee_pos, J_arm
 
-        return opti, Q, U, p_q_init, p_q_target
+    def solve(self, q_init, qd_init=None, ee_target=None):
+        """
+        Solve arm MPC for the current state.
 
-    def solve(self, q_init):
-        q_init = np.asarray(q_init).reshape(self.n)
-        if q_init.shape[0] != self.n:
-            raise ValueError("q_init size mismatch with arm indices")
+        Args:
+            q_init: joint positions (n,)
+            qd_init: joint velocities (n,) (zeros if None)
+            ee_target: desired EE position (3,) (defaults to stored ee_target)
+
+        Returns:
+            u_opt (qddot), q_next, qd_next, x_traj (2n x N+1)
+        """
+        q0 = np.asarray(q_init).reshape(self.n)
+        qd0 = np.zeros(self.n) if qd_init is None else np.asarray(qd_init).reshape(self.n)
+        if q0.shape[0] != self.n or qd0.shape[0] != self.n:
+            raise ValueError("Initial state size mismatch with arm dimension")
+
+        target = self.ee_target if ee_target is None else np.asarray(ee_target).reshape(3)
+        ee_lin, J_lin = self._linearized_fk(q0)
 
         try:
-            self.opti.set_value(self.p_q_init, q_init)
-            self.opti.set_value(self.p_q_target, self.q_target)
+            self.opti.set_value(self.p_x_init, np.concatenate([q0, qd0]))
+            self.opti.set_value(self.p_ee_target, target)
+            self.opti.set_value(self.p_q_lin, q0)
+            self.opti.set_value(self.p_ee_lin, ee_lin)
+            self.opti.set_value(self.p_J, J_lin)
             sol = self.opti.solve()
-            stats = sol.stats()
-            if stats.get("return_status", "") != "Solve_Succeeded":
-                print(f"[ArmMPC] Solver status: {stats.get('return_status')}, iter={stats.get('iter_count')}")
 
             if self.warm_start:
                 for k in range(self.N):
-                    self.opti.set_initial(self.Q_var[k], sol.value(self.Q_var[k + 1]))
+                    self.opti.set_initial(self.X_var[k], sol.value(self.X_var[k + 1]))
                 for k in range(self.N - 1):
                     self.opti.set_initial(self.U_var[k], sol.value(self.U_var[k + 1]))
-                self.opti.set_initial(self.Q_var[-1], sol.value(self.Q_var[-1]))
+                self.opti.set_initial(self.X_var[-1], sol.value(self.X_var[-1]))
                 self.opti.set_initial(self.U_var[-1], sol.value(self.U_var[-1]))
 
             u_opt = np.array(sol.value(self.U_var[0])).reshape(self.n)
-            q_next = np.array(sol.value(self.Q_var[1])).reshape(self.n)
+            x_next = np.array(sol.value(self.X_var[1])).reshape(2 * self.n)
+            q_next = x_next[: self.n]
+            qd_next = x_next[self.n :]
 
-            # Post-solve safety: gently slow down overly aggressive commands
-            if self.cmd_speed_limit is not None:
-                limit = np.minimum(np.abs(self.u_max), np.abs(self.cmd_speed_limit))
-                u_opt = np.clip(u_opt, -limit, limit)
-                q_next = q_init + self.dt * u_opt  # keep return consistent with clipped command
-
-            # Quick objective diagnostics for debugging stuck solutions
-            try:
-                pos_cost = 0.0
-                ctrl_cost = 0.0
-                q_target = np.array(self.opti.value(self.p_q_target)).reshape(self.n)
-                for k in range(self.N):
-                    qk = np.array(sol.value(self.Q_var[k])).reshape(self.n)
-                    uk = np.array(sol.value(self.U_var[k])).reshape(self.n)
-                    pos_cost += self.wq * np.dot(qk - q_target, qk - q_target)
-                    ctrl_cost += self.wu * np.dot(uk, uk)
-                if self.terminal_wq:
-                    qT = np.array(sol.value(self.Q_var[-1])).reshape(self.n)
-                    pos_cost += self.terminal_wq * np.dot(qT - q_target, qT - q_target)
-                print(f"[ArmMPC] cost pos={pos_cost:.3f} ctrl={ctrl_cost:.3f}")
-            except Exception:
-                pass
-
-            q_traj = np.zeros((self.n, self.N + 1))
+            x_traj = np.zeros((2 * self.n, self.N + 1))
             for k in range(self.N + 1):
-                q_traj[:, k] = np.array(sol.value(self.Q_var[k])).reshape(self.n)
+                x_traj[:, k] = np.array(sol.value(self.X_var[k])).reshape(2 * self.n)
 
-            return u_opt, q_next, q_traj
+            return u_opt, q_next, qd_next, x_traj
 
-        except Exception as e:
-            # fallback: zero commands and repeat q_init
-            u_safe = np.zeros(self.n)
-            q_traj = np.tile(q_init.reshape(-1, 1), (1, self.N + 1))
-            return u_safe, q_init, q_traj
-
-    def set_task_space_goal(self, goal_world_xyz, end_link_index=None):
-        """
-        Convert a Cartesian goal to a joint-space target via PyBullet IK.
-
-        Args:
-            goal_world_xyz: 3-array world-frame position for the end-effector
-            end_link_index: optional PyBullet link index; defaults to the last arm joint
-        """
-        if end_link_index is None:
-            try:
-                end_link_index = self.robot._robot_joints[self.arm_idxs[-1]]
-            except Exception as e:
-                raise RuntimeError(f"Unable to infer end link index for IK: {e}")
-
-        ik_solution = p.calculateInverseKinematics(self.robot._robot, end_link_index, goal_world_xyz)
-
-        q_goal = np.zeros(self.n)
-        for i_local, flat_idx in enumerate(self.arm_idxs):
-            pb_idx = self.robot._robot_joints[flat_idx]
-            if pb_idx < len(ik_solution):
-                q_goal[i_local] = ik_solution[pb_idx]
-
-        q_goal = np.clip(q_goal, self.q_min, self.q_max)
-        self.q_target = q_goal
-        try:
-            self.opti.set_value(self.p_q_target, self.q_target)
         except Exception:
-            pass
-        self.end_link_index = end_link_index
-        return q_goal
-
-    def current_ee_position(self, end_link_index=None):
-        """
-        Return the current end-effector position (world frame) for debugging.
-        """
-        idx = end_link_index if end_link_index is not None else self.end_link_index
-        if idx is None:
-            idx = self.robot._robot_joints[self.arm_idxs[-1]]
-        state = p.getLinkState(self.robot._robot, idx, computeLinkVelocity=0)
-        return np.array(state[0])
+            u_safe = np.zeros(self.n)
+            x0 = np.concatenate([q0, qd0])
+            x_traj = np.tile(x0.reshape(-1, 1), (1, self.N + 1))
+            return u_safe, q0, qd0, x_traj

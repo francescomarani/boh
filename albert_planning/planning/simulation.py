@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from urdfenvs.robots.generic_urdf.generic_diff_drive_robot import GenericDiffDriveRobot
 from bar_env import BarEnvironment
 import visualization
-from models import DifferentialDriveDynamics
+from models import DifferentialDriveDynamics, ManipulatorDynamics
 from mpc_planning import BaseMPC, ArmMPC
 from tqdm import tqdm
 
@@ -24,11 +24,32 @@ class AlbertSimulation:
         SOLVER_MAX_ITER = 30
         DO_WARM_START = True  # Warm start flag
         
+        # MPC ARM PARAMETERS
+        self.arm_wq = 300.0
+        self.arm_wv = 1.0e-6
+        self.arm_wu = 1.0e-6
+        self.arm_max_iter = self.arm_wq * 0.8
+
         self.T = T  # Total simulation time steps
         self.plot_trajectories = False  # Plot trajectories flag
         self.x_init = x_init  # Initial state 
         self.x_target = x_target  # Target state
+        self.env = None
         
+        # Albert robot
+        self.robots = [
+            GenericDiffDriveRobot(
+                urdf="albert.urdf",
+                mode="vel",
+                actuated_wheels=["wheel_right_joint", "wheel_left_joint"],
+                castor_wheels=["rotacastor_right_joint", "rotacastor_left_joint"],
+                wheel_radius = 0.08,
+                wheel_distance = 0.494,
+                spawn_rotation = 0,
+                facing_direction = '-y',
+            ),
+        ]
+
         # Vehicle dynamics model
         self.base_model = DifferentialDriveDynamics(dt)
         
@@ -36,13 +57,7 @@ class AlbertSimulation:
         self.base_mpc = BaseMPC(self.base_model, Base_N, self.x_target,
                                 STATE_WEIGHT, INPUT_WEIGHT, 
                                 SOLVER_MAX_ITER, DO_WARM_START)
-        
-        # Arm MPC controller placeholder (initialized when available)
         self.arm_mpc = None
-        self.arm_wq = 100.0   # state weight (larger = faster convergence)
-        self.arm_wu = 2.0    # control penalty (larger = smoother / slower)
-        self.arm_max_iter = 30
-        self.arm_speed_limit = 0.6  # rad/s cap on commanded joint speeds
 
         # PyBullet robot ID (will be set in run_albert)
         self.robot_id = None
@@ -60,18 +75,7 @@ class AlbertSimulation:
         Returns:
             history: Simulation history
         """
-        robots = [
-            GenericDiffDriveRobot(
-                urdf="albert.urdf",
-                mode="vel",
-                actuated_wheels=["wheel_right_joint", "wheel_left_joint"],
-                castor_wheels=["rotacastor_right_joint", "rotacastor_left_joint"],
-                wheel_radius = 0.08,
-                wheel_distance = 0.494,
-                spawn_rotation = 0,
-                facing_direction = '-y',
-            ),
-        ]
+        robots = self.robots
         env: BarEnvironment = BarEnvironment(
             dt=self.dt, robots=robots, render=render
         )
@@ -179,29 +183,13 @@ class AlbertSimulation:
         
         return history, x_real, u_real, x_all
 
-    def simulate_arm(self, ob, q_goal=None, ee_goal_world=None, ee_offset_world=None,
-                     ee_link_name=None, max_joint_speed=None,
+    def simulate_arm(self, ob, arm_target, ee_link_name=None,
                      max_steps=200, tol=1e-2, verbose=True):
         """
-        Run joint-space Arm MPC to move arm joints while keeping base stationary.
-
-        Args:
-            ob: Initial observation (dict) as returned by env.reset()[0]
-            q_goal: Optional numpy array with target joint positions for arm joints
-            ee_goal_world: Optional Cartesian end-effector goal (world frame, meters)
-            ee_offset_world: Optional Cartesian offset added to current EE pose to build goal
-            ee_link_name: Optional link name to use as end-effector for IK
-            max_joint_speed: Optional per-joint speed clamp (scalar or array). Defaults to self.arm_speed_limit.
-            max_steps: Maximum number of simulation steps for arm controller
-            tol: Tolerance on joint-space L2 error to stop
-            verbose: Print progress
-
-        Returns:
-            history: list of observations during arm execution
-            q_arm_hist: (n_joints, steps) array of joint trajectories
-            ee_hist: list of end-effector world positions per step (len = steps+1)
-            u_hist: (n_joints, steps) array of commanded joint velocities
+        Run arm MPC with acceleration input to reach an end-effector target.
         """
+        if arm_target is None:
+            raise ValueError("arm_target (EE position) must be provided for arm MPC")
         if self.env is None:
             raise RuntimeError("Environment not initialized. Call run_albert or create env first.")
 
@@ -211,7 +199,7 @@ class AlbertSimulation:
         # Control/action indexing:
         # action[0] = forward velocity, action[1] = angular velocity,
         # action[2:] = arm joint velocities in the same order used internally by the robot
-        arm_idxs = list(range(2, robot.n()))
+        arm_idxs = list(range(2, robot.n() - 1))  # exclude gripper joints
 
         def _end_link_index():
             if ee_link_name:
@@ -229,81 +217,38 @@ class AlbertSimulation:
 
         end_link_index = _end_link_index()
 
-        # Read current full joint positions
-        q_full = ob['robot_0']["joint_state"]["position"]
-        # q_full = [x, y, theta, joint_at_action_idx2, joint_at_action_idx3, ...]
-        q_arm = np.array([q_full[i + 1] for i in arm_idxs])  # +1 because position array starts with base (x,y,theta)
-
-        goal_world = None
-        # Build goal either in joint space (default) or in Cartesian if requested
-        if q_goal is None and (ee_goal_world is not None or ee_offset_world is not None):
-            # Cartesian target requested
-            if end_link_index is None:
-                raise RuntimeError("End-effector link could not be resolved for task-space goal.")
-            ee_state = p.getLinkState(robot._robot, end_link_index, computeLinkVelocity=0)
-            current_ee = np.array(ee_state[0])
-            offset = np.array(ee_offset_world) if ee_offset_world is not None else np.array([0.05, 0.0, 0.05])
-            goal_world = np.asarray(ee_goal_world) if ee_goal_world is not None else current_ee + offset
-            q_goal = q_arm.copy()  # placeholder, replaced after ArmMPC construction
-        elif q_goal is None:
-            offsets = np.zeros(len(arm_idxs))
-            if len(offsets) >= 1:
-                offsets[0] = 0.3
-            if len(offsets) >= 2:
-                offsets[1] = -0.15
-            q_goal = q_arm + offsets
-
-        # Clip to robot limits when available
-        try:
-            q_min = np.array([robot._limit_pos_j[0, idx + 1] for idx in arm_idxs])
-            q_max = np.array([robot._limit_pos_j[1, idx + 1] for idx in arm_idxs])
-            q_goal = np.clip(q_goal, q_min, q_max)
-        except Exception:
-            pass
-
-        speed_limit = max_joint_speed if max_joint_speed is not None else self.arm_speed_limit
-        if verbose:
-            try:
-                print(f"  Action bounds arm segment: low={self.env.action_space.low[2:]}, high={self.env.action_space.high[2:]}")
-            except Exception:
-                pass
+        # Read current full joint positions/velocities using PyBullet joint indices
+        arm_pb_idxs = [robot._robot_joints[i] for i in arm_idxs]
+        arm_states = p.getJointStates(robot._robot, arm_pb_idxs)
+        q_arm = np.array([st[0] for st in arm_states])
+        qd_arm = np.array([st[1] for st in arm_states])
+        ee_target = np.asarray(arm_target).reshape(3)
 
         # Create ArmMPC if not already created
         if self.arm_mpc is None:
-            self.arm_mpc = ArmMPC(robot, arm_idxs, self.Arm_N, self.dt, q_goal,
-                                    wq=self.arm_wq, wu=self.arm_wu,
-                                    terminal_wq=self.arm_wq * 8.0,
-                                    u_slew_weight=0.1,
-                                    max_joint_speed=speed_limit,
-                                    SOLVER_MAX_ITER=self.arm_max_iter,
-                                    DO_WARM_START=False)  # warm start off to avoid sticking at zero
-            try:
-                self.arm_mpc.opti.set_value(self.arm_mpc.p_q_target, self.arm_mpc.q_target)
-            except Exception:
-                pass
+            model = ManipulatorDynamics(robot, arm_idxs, self.dt, ee_link_index=end_link_index)
+            self.arm_mpc = ArmMPC(
+                model,
+                self.Arm_N,
+                ee_target=ee_target,
+                w_p=self.arm_wq,
+                w_v=self.arm_wv,
+                w_a=self.arm_wu,
+                w_final=self.arm_wq * 8.0,
+                SOLVER_MAX_ITER=self.arm_max_iter,
+                DO_WARM_START=False,  # avoid sticking at zero initially
+            )
             if verbose:
-                print(f"✓ ArmMPC created for {len(arm_idxs)} joints (speed limit {speed_limit} rad/s)")
+                print(f"✓ ArmMPC created for {len(arm_idxs)} joints")
         else:
-            # update target if ArmMPC exists
-            self.arm_mpc.q_target = np.asarray(q_goal).reshape(len(arm_idxs))
-            try:
-                self.arm_mpc.opti.set_value(self.arm_mpc.p_q_target, self.arm_mpc.q_target)
-            except Exception:
-                pass
+            self.arm_mpc.ee_target = ee_target
 
-        if goal_world is not None:
-            q_goal_ts = self.arm_mpc.set_task_space_goal(goal_world, end_link_index=end_link_index)
-            if verbose:
-                print(f"Task-space goal (world): {goal_world}, IK q_target: {q_goal_ts}")
-        elif verbose:
-            print(f"Joint-space goal: {q_goal}")
         if verbose:
             if end_link_index is not None:
                 ee_state = p.getLinkState(robot._robot, end_link_index, computeLinkVelocity=0)
                 print(f"  Current EE world pos: {np.array(ee_state[0])}")
             print(f"  Initial q_arm: {q_arm}")
-            print(f"  Target q_arm:  {self.arm_mpc.q_target}")
-            print(f"  u_max used by ArmMPC: {self.arm_mpc.u_max}")
+            print(f"  Target EE:  {ee_target}")
 
         history = []
         q_arm_hist = np.zeros((len(arm_idxs), max_steps + 1))
@@ -311,21 +256,21 @@ class AlbertSimulation:
         u_hist = np.zeros((len(arm_idxs), max_steps))
         ee_hist = []
         try:
-            ee_hist.append(self.arm_mpc.current_ee_position(end_link_index=end_link_index))
+            ee_hist.append(self.arm_mpc.model.current_ee_position())
         except Exception:
             ee_hist.append(np.full(3, np.nan))
 
         for step in range(max_steps):
-            u_arm, q_next, _ = self.arm_mpc.solve(q_arm)
+            u_arm, q_next, qd_next, _ = self.arm_mpc.solve(q_arm, qd_arm, ee_target=ee_target)
             if verbose and step == 0:
-                print(f"  First MPC command (rad/s): {u_arm}")
+                print(f"  First MPC command (acc): {u_arm}")
 
             # Build full action: zeros for base, place arm velocities in appropriate indices
             action = np.zeros(total_action_dim)
             action[0] = 0.0  # keep base still (forward vel)
             action[1] = 0.0  # keep base still (angular vel)
-            for i_local, flat_idx in enumerate(self.arm_mpc.arm_idxs):
-                action[flat_idx] = float(u_arm[i_local])
+            for i_local, flat_idx in enumerate(arm_idxs):
+                action[flat_idx] = float(qd_next[i_local])
 
             # Respect environment action bounds if available
             try:
@@ -341,38 +286,29 @@ class AlbertSimulation:
                 truncated = False
 
             # Read new arm state
-            q_full = ob['robot_0']["joint_state"]["position"]
-            q_arm = np.array([q_full[i + 1] for i in self.arm_mpc.arm_idxs])
+            arm_states = p.getJointStates(robot._robot, arm_pb_idxs)
+            q_arm = np.array([st[0] for st in arm_states])
+            qd_arm = np.array([st[1] for st in arm_states])
             q_arm_hist[:, step + 1] = q_arm
             u_hist[:, step] = u_arm
             history.append(ob)
 
             if verbose and step % 10 == 0:
-                ee_cur = self.arm_mpc.current_ee_position(end_link_index=end_link_index)
-                print(f"  step {step}: ee={ee_cur}, action_arm={u_arm}, q_arm={q_arm}")
+                ee_cur = self.arm_mpc.model.current_ee_position()
+                print(f"  step {step}: ee={ee_cur}, acc={u_arm}, q_arm={q_arm}")
 
-            err_norm = np.linalg.norm(q_arm - self.arm_mpc.q_target)
-            if goal_world is not None:
-                ee_pos = self.arm_mpc.current_ee_position(end_link_index=end_link_index)
-                ee_err = np.linalg.norm(ee_pos - goal_world)
-            else:
-                ee_err = None
+            ee_pos = self.arm_mpc.model.current_ee_position()
+            ee_err = np.linalg.norm(ee_pos - ee_target) if ee_pos is not None else np.inf
             try:
-                ee_hist.append(self.arm_mpc.current_ee_position(end_link_index=end_link_index))
+                ee_hist.append(self.arm_mpc.model.current_ee_position())
             except Exception:
                 ee_hist.append(np.full(3, np.nan))
             if verbose and step % 10 == 0:
-                msg = f"  Arm step {step}, joint err={err_norm:.4f}"
-                if ee_err is not None:
-                    msg += f", ee err={ee_err:.4f} m"
-                print(msg)
-            reached = err_norm < tol
-            if ee_err is not None:
-                reached = reached or ee_err < max(0.5 * tol, 0.01)
+                print(f"  Arm step {step}, ee err={ee_err:.4f} m")
+            reached = ee_err < max(0.5 * tol, 0.01)
             if reached:
                 if verbose:
-                    extra = f", ee err={ee_err:.4f} m" if ee_err is not None else ""
-                    print(f"  ✓ Arm goal reached in {step} steps (joint err={err_norm:.4f}{extra})")
+                    print(f"  ✓ Arm goal reached in {step} steps (ee err={ee_err:.4f} m)")
                 q_arm_hist = q_arm_hist[:, :step + 2]
                 u_hist = u_hist[:, :step + 1]
                 ee_hist = ee_hist[:step + 2]
@@ -380,21 +316,19 @@ class AlbertSimulation:
 
         return history, q_arm_hist, ee_hist, u_hist
 
-    def run_albert_arm(self, render=False, q_goal=None, ee_goal_world=None,
-                       ee_offset_world=None, ee_link_name=None,
-                       max_joint_speed=None, max_steps=200):
+    def run_albert_arm(self, render=False, arm_target=None,
+                       ee_link_name=None, max_steps=200):
         """
         Initialize environment and run the Arm MPC test (base remains stationary).
 
         Args:
             render: pybullet rendering
-            q_goal: optional joint-space goal
-            ee_goal_world: optional Cartesian end-effector goal (world frame)
-            ee_offset_world: optional world-frame offset added to current EE pose
+            arm_target: desired end-effector position (world frame)
             ee_link_name: optional end-effector link name override
-            max_joint_speed: optional speed clamp passed to ArmMPC
             max_steps: simulation steps for arm controller
         """
+        if arm_target is None:
+            raise ValueError("arm_target (EE position) must be provided")
         robots = [
             GenericDiffDriveRobot(
                 urdf="albert.urdf",
@@ -418,37 +352,15 @@ class AlbertSimulation:
         print(f"Initial observation: {ob}")
 
         self.env = env
+        self.arm_mpc = None
         robot = env._robots[0]
         arm_joint_names = robot._joint_names[2:] if hasattr(robot, "_joint_names") else []
         history, q_arm_hist, ee_hist, u_hist = self.simulate_arm(
             ob[0],
-            q_goal=q_goal,
-            ee_goal_world=ee_goal_world,
-            ee_offset_world=ee_offset_world,
+            arm_target=arm_target,
             ee_link_name=ee_link_name,
-            max_joint_speed=max_joint_speed,
             max_steps=max_steps,
         )
-
-        # Optional second target: send the arm to a new Cartesian goal for a chained maneuver
-        if ee_goal_world is not None:
-            goal2 = np.array(ee_goal_world, dtype=float)
-            goal2 += np.array([0.1, 0.2, -0.1])  # move 20cm in +y as a demo, x +10cm, z -10cm
-            print(f"\nStarting second arm goal: {goal2}")
-            hist2, q_arm_hist2, ee_hist2, u_hist2 = self.simulate_arm(
-                self.env._get_ob(),
-                q_goal=None,
-                ee_goal_world=goal2,
-                ee_offset_world=None,
-                ee_link_name=ee_link_name,
-                max_joint_speed=max_joint_speed,
-                max_steps=max_steps,
-            )
-            history.extend(hist2)
-            # concatenate trajectories along time axis if lengths differ
-            q_arm_hist = np.concatenate([q_arm_hist, q_arm_hist2], axis=1)
-            ee_hist = ee_hist + ee_hist2
-            u_hist = np.concatenate([u_hist, u_hist2], axis=1)
 
         env.close()
         return history, q_arm_hist, ee_hist, u_hist, arm_joint_names
@@ -646,20 +558,19 @@ if __name__ == "__main__":
         
         # Create simulation with reasonable target
         sim = AlbertSimulation(
-            dt=0.05,  # 50ms timestep
+            dt=0.02,  # 50ms timestep
             Base_N=70,
             Arm_N=50,
-            T=800,  # More timesteps to reach goal
+            T=0,  # More timesteps to reach goal
             x_init=np.array([0., 0., 0.]),
             x_target=np.array([20., -10., 2.])  # Target 
         )
         
-        # Run arm-only simulation
-        # Explicit Cartesian goal (world frame). Adjust if your scene differs.
-        ee_goal_world = np.array([0.15, -0.5, 1.45])
+        # Run arm-only simulation with a reachable Cartesian goal (world frame).
+        ee_goal_world = np.array([0.02, -0.47, 1.33])
         history, q_arm_hist, ee_hist, u_arm_hist, joint_names = sim.run_albert_arm(
             render=True,
-            ee_goal_world=ee_goal_world,
+            arm_target=ee_goal_world,
             max_steps=300,
         )
 
