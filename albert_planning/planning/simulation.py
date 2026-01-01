@@ -17,6 +17,63 @@ from path_planner import ConfigurationSpacePlanner
 from discrete_controller import DiscreteController, DiscreteControllerWithAvoidance
 from tqdm import tqdm
 
+
+def validate_target(target, obstacles, robot_radius, safety_margin):
+    """
+    Validate that target position is reachable (not inside obstacles).
+
+    Args:
+        target: Target position [x, y, theta]
+        obstacles: List of obstacle dictionaries
+        robot_radius: Robot bounding radius
+        safety_margin: Additional safety margin
+
+    Returns:
+        (is_valid, message): Tuple of validation result and error message
+    """
+    target_pos = target[:2]
+    min_clearance = robot_radius + safety_margin
+
+    for obs in obstacles:
+        obs_pos = obs['position']
+
+        if obs['type'] == 'circle':
+            # Distance from target to circle center
+            dist = np.linalg.norm(target_pos - obs_pos)
+            clearance = dist - obs['radius']
+
+            if clearance < min_clearance:
+                return False, (
+                    f"Target [{target[0]:.2f}, {target[1]:.2f}] is too close to obstacle '{obs['name']}'!\n"
+                    f"  Required clearance: {min_clearance:.2f}m (robot_radius + safety_margin)\n"
+                    f"  Actual clearance: {clearance:.2f}m\n"
+                    f"  Target is {'INSIDE' if clearance < 0 else 'too close to'} the obstacle."
+                )
+
+        elif obs['type'] == 'box':
+            # Signed distance to axis-aligned box
+            half_x = obs['size'][0] / 2.0
+            half_y = obs['size'][1] / 2.0
+            dx = abs(target_pos[0] - obs_pos[0]) - half_x
+            dy = abs(target_pos[1] - obs_pos[1]) - half_y
+
+            # Distance outside box
+            dist_outside = np.sqrt(max(dx, 0)**2 + max(dy, 0)**2)
+            # Distance inside box (negative)
+            dist_inside = min(max(dx, dy), 0)
+            clearance = dist_outside + dist_inside
+
+            if clearance < min_clearance:
+                return False, (
+                    f"Target [{target[0]:.2f}, {target[1]:.2f}] is too close to obstacle '{obs['name']}'!\n"
+                    f"  Required clearance: {min_clearance:.2f}m (robot_radius + safety_margin)\n"
+                    f"  Actual clearance: {clearance:.2f}m\n"
+                    f"  Target is {'INSIDE' if clearance < 0 else 'too close to'} the obstacle."
+                )
+
+    return True, "Target is valid and reachable"
+
+
 class AlbertSimulation:
     def __init__(self, dt=0.01, Base_N=20, Arm_N=10,
                  T=50, x_init=np.array([0., 1., 0.]),
@@ -126,6 +183,22 @@ class AlbertSimulation:
             # Get obstacles from environment (single source of truth)
             obstacle_dicts = env.get_mpc_obstacles()
             obstacle_list = obstacles_from_dict_list(obstacle_dicts)
+
+            # ===== TARGET VALIDATION =====
+            print("\n" + "-" * 40)
+            print("VALIDATING TARGET POSITION")
+            print("-" * 40)
+            is_valid, message = validate_target(
+                self.x_target, obstacle_dicts, self.robot_radius, self.safety_margin
+            )
+            if not is_valid:
+                print(f"\n❌ TARGET VALIDATION FAILED!")
+                print(message)
+                print("\nSuggestion: Move target away from obstacles or reduce safety_margin.")
+                raise ValueError("Target position is not reachable due to obstacle collision")
+            else:
+                print(f"✓ Target is valid: {message}")
+            print("-" * 40)
 
             # ===== A* PATH PLANNING =====
             if self.use_astar_planning:
