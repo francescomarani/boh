@@ -222,7 +222,9 @@ class CollisionAvoidanceMPC(BaseMPC):
             dist_to_target_sq = dx_to_target**2 + dy_to_target**2 + 0.01  # Avoid division by zero
 
             # Desired heading toward target
-            desired_heading = cs.atan2(dy_to_target, dx_to_target)
+            # Add π/2 offset for Albert's facing_direction='-y'
+            # (theta=0 points toward -y, not +x)
+            desired_heading = cs.atan2(dy_to_target, dx_to_target) + cs.pi / 2
             heading_error = X[k][2] - desired_heading
             heading_error_wrapped = cs.atan2(cs.sin(heading_error), cs.cos(heading_error))
 
