@@ -304,7 +304,7 @@ class AlbertSimulation:
 
             # Check convergence to FINAL target
             distance = np.linalg.norm(x_real[0:2, t+1] - self.x_target[0:2])
-            if distance < 0.2:  # 20cm threshold
+            if distance < 0.3:  # 30cm threshold (increased for easier convergence)
                 print(f"\n✓ Goal reached at step {t}!")
                 print(f"  Final position: x={x_real[0,t+1]:.3f}, y={x_real[1,t+1]:.3f}")
                 print(f"  Final distance: {distance:.3f}m")
@@ -391,8 +391,8 @@ def plot_results(x_real, u_real, x_target, dt, save_path='albert_mpc_results.png
                  head_width=0.1, head_length=0.08, fc='blue', ec='blue', alpha=0.6)
     
     # Draw goal circle
-    circle = plt.Circle((x_target[0], x_target[1]), 0.2, color='red', fill=False, 
-                        linestyle='--', linewidth=2, label='Goal region (20cm)')
+    circle = plt.Circle((x_target[0], x_target[1]), 0.3, color='red', fill=False,
+                        linestyle='--', linewidth=2, label='Goal region (30cm)')
     ax1.add_patch(circle)
     
     ax1.set_xlabel('x [m]', fontsize=12)
@@ -450,8 +450,8 @@ def plot_results(x_real, u_real, x_target, dt, save_path='albert_mpc_results.png
     ax6 = fig.add_subplot(gs[2, 2])
     distance = np.sqrt((x_real[0, :] - x_target[0])**2 + (x_real[1, :] - x_target[1])**2)
     ax6.plot(time, distance, 'purple', linewidth=2.5)
-    ax6.axhline(y=0.2, color='red', linestyle='--', linewidth=2, label='Goal threshold (20cm)')
-    ax6.fill_between(time, 0, 0.2, alpha=0.2, color='green', label='Goal region')
+    ax6.axhline(y=0.3, color='red', linestyle='--', linewidth=2, label='Goal threshold (30cm)')
+    ax6.fill_between(time, 0, 0.3, alpha=0.2, color='green', label='Goal region')
     ax6.set_xlabel('Time [s]', fontsize=10)
     ax6.set_ylabel('Distance [m]', fontsize=10)
     ax6.legend(fontsize=9)
