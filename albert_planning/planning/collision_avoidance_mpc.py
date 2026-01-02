@@ -455,13 +455,13 @@ class CollisionAvoidanceMPC(BaseMPC):
             heading_error = desired_heading - x_init[2]
             heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
 
-            if clearance < 0.05:
+            if clearance < 0.10:
                 # EMERGENCY: Very close to obstacle - backup!
                 print(f"  EMERGENCY BACKUP: clearance={clearance:.2f}m to {obs_name}")
                 u_safe = np.array([-0.5, 0.0])  # Reverse
                 self.recovery_direction = 0  # Reset hysteresis on backup
                 self.recovery_steps = 0
-            elif clearance < 0.15:
+            elif clearance < 0.25:
                 # Close to obstacle - rotate with hysteresis to avoid oscillation
                 self.recovery_steps += 1
 
@@ -483,7 +483,7 @@ class CollisionAvoidanceMPC(BaseMPC):
                     forward_v = 0.0
                     print(f"  AVOIDING: clearance={clearance:.2f}m, rotating {'left' if rotate_dir > 0 else 'right'}")
                 u_safe = np.array([forward_v, rotate_dir * 0.8])
-            elif clearance < 0.4:
+            elif clearance < 0.55:
                 # Some clearance - move forward with rotation toward target
                 rotate_dir = 1.0 if heading_error > 0 else -1.0
                 # Scale forward speed based on how aligned we are
