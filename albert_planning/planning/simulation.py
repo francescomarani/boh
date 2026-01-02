@@ -584,7 +584,7 @@ if __name__ == "__main__":
             robot_radius=0.35,
             safety_margin=0.15,  # Increased margin for better avoidance
             use_soft_constraints=True,  # HYBRID: Hard constraints + soft penalty for vision
-            soft_constraint_weight=50.0  # Reduced from 200.0 to avoid infeasibility near corners
+            soft_constraint_weight=200.0  # Increased weight for stronger repulsion
         )
 
         # Run simulation (render=False for headless environments)
