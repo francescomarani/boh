@@ -277,8 +277,8 @@ class CollisionAvoidanceMPC(BaseMPC):
                         dist = cs.sqrt(dist_squared + 1e-6)  # Smooth sqrt
                         min_dist = obs.radius + total_clearance
 
-                        # HYBRID: Always add hard constraint with safety margin
-                        hard_clearance = obs.radius + self.robot_radius + 0.15
+                        # HYBRID: Always add hard constraint with reduced clearance
+                        hard_clearance = obs.radius + self.robot_radius + 0.05
                         opti.subject_to(dist_squared >= hard_clearance**2)
 
                         if self.use_soft_constraints:
@@ -306,8 +306,8 @@ class CollisionAvoidanceMPC(BaseMPC):
                         dist_inside = cs.fmin(cs.fmax(dx, dy), 0)
                         signed_dist = dist_outside + dist_inside
 
-                        # HYBRID: Always add hard constraint with safety margin
-                        hard_clearance = self.robot_radius + 0.15
+                        # HYBRID: Always add hard constraint with reduced clearance
+                        hard_clearance = self.robot_radius + 0.05
                         opti.subject_to(dist_outside_sq >= hard_clearance**2)
 
                         if self.use_soft_constraints:
