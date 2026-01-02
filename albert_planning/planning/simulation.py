@@ -272,7 +272,7 @@ class AlbertSimulation:
                     constraint_every_n_steps=1,  # Check every step for safety
                     SOLVER_MAX_ITER=SOLVER_MAX_ITER,
                     DO_WARM_START=DO_WARM_START,
-                    max_obstacles=5  # Reduced from 8 to speed up MPC
+                    max_obstacles=8
                 )
             self.obstacles = obstacle_list
         else:
