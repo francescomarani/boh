@@ -482,14 +482,14 @@ class CollisionAvoidanceMPC(BaseMPC):
                 else:
                     forward_v = 0.0
                     print(f"  AVOIDING: clearance={clearance:.2f}m, rotating {'left' if rotate_dir > 0 else 'right'}")
-                u_safe = np.array([forward_v, rotate_dir * 0.8])
+                u_safe = np.array([forward_v, rotate_dir * 1.5])
             elif clearance < 0.55:
                 # Some clearance - move forward with rotation toward target
                 rotate_dir = 1.0 if heading_error > 0 else -1.0
                 # Scale forward speed based on how aligned we are
                 forward_v = 0.5 * max(0.0, np.cos(heading_error))
                 print(f"  RECOVERY: v={forward_v:.2f}, rotating toward target (err={np.degrees(heading_error):.1f}°)")
-                u_safe = np.array([forward_v, rotate_dir * 0.6])
+                u_safe = np.array([forward_v, rotate_dir * 1.2])
                 self.recovery_direction = 0
                 self.recovery_steps = 0
             else:
@@ -497,7 +497,7 @@ class CollisionAvoidanceMPC(BaseMPC):
                 rotate_dir = 1.0 if heading_error > 0 else -1.0
                 forward_v = 0.8 * max(0.0, np.cos(heading_error))
                 print(f"  OPEN: v={forward_v:.2f}, heading toward target (err={np.degrees(heading_error):.1f}°)")
-                u_safe = np.array([forward_v, rotate_dir * 0.5])
+                u_safe = np.array([forward_v, rotate_dir * 0.8])
                 self.recovery_direction = 0
                 self.recovery_steps = 0
 
