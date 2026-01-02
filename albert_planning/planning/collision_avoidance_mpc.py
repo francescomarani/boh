@@ -231,8 +231,8 @@ class CollisionAvoidanceMPC(BaseMPC):
             # Disable heading alignment when very close to target (< 2m) to avoid oscillation
             # Reduce heading weight progressively as robot approaches target
             dist_to_target = cs.sqrt(dist_to_target_sq)
-            # Weight goes to zero when dist < 2m, full weight (2.0) when dist > 3m
-            heading_weight = 2.0 * cs.fmax(0, cs.fmin(1.0, (dist_to_target - 2.0)))
+            # Weight goes to zero when dist < 2m, full weight (10.0) when dist > 3m
+            heading_weight = 10.0 * cs.fmax(0, cs.fmin(1.0, (dist_to_target - 2.0)))
             cost += heading_weight * heading_error_wrapped**2
 
             # Dynamics constraint: X[k+1] = X[k] + dt * f(X[k], U[k])
