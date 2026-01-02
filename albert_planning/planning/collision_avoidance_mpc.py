@@ -215,16 +215,24 @@ class CollisionAvoidanceMPC(BaseMPC):
             # Input cost
             cost += self.wu * U[k].T @ U[k]
 
-            # HEADING ALIGNMENT COST: Encourage robot to face the target
-            # This promotes "rotate then translate" behavior
+            # HEADING ALIGNMENT COST: Align heading with trajectory direction
+            # This promotes smooth "natural steering" behavior
             dx_to_target = p_x_target[0] - X[k][0]
             dy_to_target = p_x_target[1] - X[k][1]
             dist_to_target_sq = dx_to_target**2 + dy_to_target**2 + 0.01  # Avoid division by zero
 
-            # Desired heading toward target
+            # Desired heading along trajectory (tangent to path)
+            # Use direction from X[k] to X[k+1], except for last timestep
             # Add π/2 offset for Albert's facing_direction='-y'
-            # (theta=0 points toward -y, not +x)
-            desired_heading = cs.atan2(dy_to_target, dx_to_target) + cs.pi / 2
+            if k < N - 1:
+                # Trajectory direction (from current to next predicted position)
+                dx_traj = X[k+1][0] - X[k][0]
+                dy_traj = X[k+1][1] - X[k][1]
+                desired_heading = cs.atan2(dy_traj, dx_traj) + cs.pi / 2
+            else:
+                # For last timestep, use direction toward final target
+                desired_heading = cs.atan2(dy_to_target, dx_to_target) + cs.pi / 2
+
             heading_error = X[k][2] - desired_heading
             heading_error_wrapped = cs.atan2(cs.sin(heading_error), cs.cos(heading_error))
 
